@@ -1,0 +1,345 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum Role {
+  admin
+  cashier
+}
+
+enum ProductStatus {
+  active
+  archived
+}
+
+enum PaymentMethod {
+  cash
+  gcash
+}
+
+enum POStatus {
+  pending
+  received
+}
+
+enum DeliveryStatus {
+  pending
+  in_transit
+  completed
+  cancelled
+}
+
+enum CustomerType {
+  new
+  regular
+  loyal
+  vip
+  bulk
+}
+
+enum StockChangeType {
+  in
+  out
+  adjustment
+  empty_return
+}
+
+model Category {
+  category_id Int      @id @default(autoincrement())
+  code        String   @unique @db.VarChar(40)
+  name        String   @db.VarChar(80)
+  /// Drives the cylinder-only rules: exchange fee, full/empty tracking.
+  is_cylinder Boolean  @default(false)
+  status      String   @default("active") @db.VarChar(20)
+  created_at  DateTime @default(now())
+
+  @@map("categories")
+}
+
+model Uom {
+  uom_id     Int      @id @default(autoincrement())
+  code       String   @unique @db.VarChar(20)
+  name       String   @db.VarChar(80)
+  status     String   @default("active") @db.VarChar(20)
+  created_at DateTime @default(now())
+
+  @@map("uoms")
+}
+
+model User {
+  user_id              Int      @id @default(autoincrement())
+  username             String   @unique @db.VarChar(80)
+  password             String   @db.VarChar(255)
+  full_name            String   @db.VarChar(120)
+  role                 Role     @default(cashier)
+  status               String   @default("active") @db.VarChar(20)
+  must_change_password Boolean  @default(false)
+  two_factor_secret    String?  @db.VarChar(255)
+  two_factor_enabled   Boolean  @default(false)
+  created_at           DateTime @default(now())
+
+  transactions Transaction[]
+  cashSessions CashSession[]
+  auditLogs    AuditLog[]
+  zReports     ZReport[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("users")
+}
+
+model Supplier {
+  supplier_id    Int      @id @default(autoincrement())
+  name           String   @db.VarChar(120)
+  contact_person String   @db.VarChar(120)
+  phone          String   @db.VarChar(50)
+  email          String?  @db.VarChar(120)
+  address        String   @db.Text
+  status         String?  @default("active") @db.VarChar(20)
+  created_at     DateTime @default(now())
+
+  products       ProductSupplier[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model Product {
+  product_id        Int             @id @default(autoincrement())
+  sku               String          @unique @db.VarChar(60)
+  name              String          @db.VarChar(160)
+  category          String          @db.VarChar(40)
+  uom               String          @db.VarChar(20)
+  base_price        Decimal         @default(0) @db.Decimal(12, 2)
+  margin_pct        Decimal         @default(0) @db.Decimal(5, 2)
+  selling_price     Decimal         @default(0) @db.Decimal(12, 2)
+  stock_qty         Int             @default(0)
+  new_stock_qty     Int             @default(0)
+  old_stock_qty     Int             @default(0)
+  full_qty          Int             @default(0)
+  empty_qty         Int             @default(0)
+  min_stock         Int             @default(0)
+  max_stock         Int             @default(0)
+  location          String?         @db.VarChar(80)
+  status            String          @default("active") @db.VarChar(20)
+  created_at        DateTime        @default(now())
+  last_restocked_at DateTime?
+
+  suppliers          ProductSupplier[]
+  poItems            PurchaseOrderItem[]
+  transactionDetails TransactionDetail[]
+  inventoryLogs      InventoryLog[]
+  deliveryItems      DeliveryItem[]
+
+  @@map("products")
+}
+
+model ProductSupplier {
+  id          Int      @id @default(autoincrement())
+  product_id  Int
+  supplier_id Int
+  product     Product  @relation(fields: [product_id], references: [product_id])
+  supplier    Supplier @relation(fields: [supplier_id], references: [supplier_id])
+
+  @@unique([product_id, supplier_id])
+  @@map("product_suppliers")
+}
+
+model PurchaseOrder {
+  po_id        Int                 @id @default(autoincrement())
+  supplier_id  Int
+  supplier     Supplier            @relation(fields: [supplier_id], references: [supplier_id])
+  order_date   DateTime            @default(now())
+  estimated_delivery DateTime?
+  total_amount Decimal             @default(0) @db.Decimal(12, 2)
+  status       String              @default("pending") @db.VarChar(20)
+  received_at  DateTime?
+  reference_no String?             @db.VarChar(40)
+  created_by   Int?
+  createdBy    User?               @relation(fields: [created_by], references: [user_id])
+  cancelled_at DateTime?
+  items        PurchaseOrderItem[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id            Int           @id @default(autoincrement())
+  po_id         Int
+  product_id    Int
+  quantity      Int           @default(0)
+  unit_cost     Decimal       @default(0) @db.Decimal(12, 2)
+  received_qty   Int           @default(0)
+  /// Structured receiving discrepancies, kept as counts rather than prose so
+  /// they can be reported on. receive_note carries the explanation.
+  missing_qty    Int           @default(0)
+  damaged_qty    Int           @default(0)
+  excess_qty     Int           @default(0)
+  receive_status String        @default("pending") @db.VarChar(20)
+  receive_note   String?       @db.Text
+  received_at    DateTime?
+  purchaseOrder PurchaseOrder @relation(fields: [po_id], references: [po_id])
+  product       Product       @relation(fields: [product_id], references: [product_id])
+
+  @@map("purchase_order_items")
+}
+
+model Customer {
+  customer_id       Int      @id @default(autoincrement())
+  name              String   @db.VarChar(160)
+  phone             String   @db.VarChar(50)
+  address           String   @db.Text
+  notes             String?  @db.Text
+  address_secondary String?  @db.Text
+  email             String?  @db.VarChar(120)
+  type              String   @default("new") @db.VarChar(20)
+  created_at        DateTime @default(now())
+
+  deliveries Delivery[]
+
+  @@map("customers")
+}
+
+model Delivery {
+  delivery_id    Int            @id @default(autoincrement())
+  customer_id    Int
+  customer       Customer       @relation(fields: [customer_id], references: [customer_id])
+  address        String         @db.Text
+  status         String         @default("pending") @db.VarChar(30)
+  eta            DateTime?
+  total_amount   Decimal        @default(0) @db.Decimal(12, 2)
+  created_at     DateTime       @default(now())
+  completed_at   DateTime?
+  reference_no   String?        @db.VarChar(40)
+  sales_order_no String?        @db.VarChar(40)
+  notes          String?        @db.Text
+  payment_method String?        @db.VarChar(20)
+  gcash_mobile   String?        @db.VarChar(20)
+  gcash_reference String?       @db.VarChar(40)
+  session_id     Int?
+  session        CashSession?    @relation(fields: [session_id], references: [session_id])
+  transaction    Transaction?
+  items          DeliveryItem[]
+
+  @@map("deliveries")
+}
+
+model DeliveryItem {
+  id          Int      @id @default(autoincrement())
+  delivery_id Int
+  product_id  Int
+  quantity    Int      @default(0)
+  without_cylinder_qty Int @default(0)
+  cylinder_fee Decimal  @default(0) @db.Decimal(12, 2)
+  delivery    Delivery @relation(fields: [delivery_id], references: [delivery_id])
+  product     Product  @relation(fields: [product_id], references: [product_id])
+
+  @@map("delivery_items")
+}
+
+model CashSession {
+  session_id          Int       @id @default(autoincrement())
+  user_id             Int
+  user                User      @relation(fields: [user_id], references: [user_id])
+  beginning_balance   Decimal   @default(0) @db.Decimal(12, 2)
+  opened_at           DateTime  @default(now())
+  closed_at           DateTime?
+  actual_cash_counted Decimal?  @db.Decimal(12, 2)
+  status              String    @default("open") @db.VarChar(20)
+  deliveries          Delivery[]
+
+  @@map("cash_sessions")
+}
+
+model Transaction {
+  transaction_id   Int                 @id @default(autoincrement())
+  user_id          Int
+  user             User                @relation(fields: [user_id], references: [user_id])
+  transaction_date DateTime            @default(now())
+  subtotal         Decimal             @default(0) @db.Decimal(12, 2)
+  discount_amount  Decimal             @default(0) @db.Decimal(12, 2)
+  cylinder_fee     Decimal             @default(0) @db.Decimal(12, 2)
+  vat_amount       Decimal             @default(0) @db.Decimal(12, 2)
+  total_amount     Decimal             @default(0) @db.Decimal(12, 2)
+  payment_method   String              @db.VarChar(20)
+  cash_received    Decimal?            @db.Decimal(12, 2)
+  change_amount    Decimal?            @db.Decimal(12, 2)
+  voided           Boolean             @default(false)
+  reference_no     String?             @db.VarChar(40)
+  gcash_reference  String?             @db.VarChar(40)
+  gcash_mobile     String?             @db.VarChar(20)
+  session_id       Int?
+  source_delivery_id Int?      @unique
+  sourceDelivery   Delivery?   @relation(fields: [source_delivery_id], references: [delivery_id])
+  details          TransactionDetail[]
+
+  @@map("transactions")
+}
+
+model TransactionDetail {
+  detail_id            Int         @id @default(autoincrement())
+  transaction_id       Int
+  product_id           Int
+  quantity             Int         @default(0)
+  price                Decimal     @default(0) @db.Decimal(12, 2)
+  subtotal             Decimal     @default(0) @db.Decimal(12, 2)
+  without_cylinder     Boolean     @default(false)
+  without_cylinder_qty Int         @default(0)
+  transaction          Transaction @relation(fields: [transaction_id], references: [transaction_id])
+  product              Product     @relation(fields: [product_id], references: [product_id])
+
+  @@map("transaction_details")
+}
+
+model InventoryLog {
+  log_id      Int      @id @default(autoincrement())
+  product_id  Int
+  product     Product  @relation(fields: [product_id], references: [product_id])
+  change_type String   @db.VarChar(30)
+  quantity    Int      @default(0)
+  reason      String?  @db.VarChar(255)
+  ref_type    String?  @db.VarChar(30)
+  ref_id      Int?
+  created_at  DateTime @default(now())
+
+  @@map("inventory_logs")
+}
+
+model AuditLog {
+  log_id     Int      @id @default(autoincrement())
+  user_id    Int
+  user       User     @relation(fields: [user_id], references: [user_id])
+  role       Role
+  action     String   @db.VarChar(80)
+  module     String   @db.VarChar(80)
+  details    String   @db.Text
+  created_at DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model Settings {
+  key   String @id @db.VarChar(100)
+  value String @db.Text
+
+  @@map("settings")
+}
+
+model ZReport {
+  report_id         Int      @id @default(autoincrement())
+  user_id           Int
+  user              User     @relation(fields: [user_id], references: [user_id])
+  generated_at      DateTime @default(now())
+  since             DateTime
+  transaction_count Int      @default(0)
+  total_sales       Decimal  @default(0) @db.Decimal(12, 2)
+  total_vat         Decimal  @default(0) @db.Decimal(12, 2)
+  cash_sales        Decimal  @default(0) @db.Decimal(12, 2)
+  gcash_sales       Decimal  @default(0) @db.Decimal(12, 2)
+
+  @@map("z_reports")
+}
