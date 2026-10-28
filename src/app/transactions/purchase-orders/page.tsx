@@ -778,11 +778,11 @@ function PurchaseOrdersPageView() {
         <table className="min-w-full text-left text-sm">
           <thead className="bg-[#f1f5f9] text-slate-500">
             <tr>
+              <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">PO #</th>
               <th className="px-4 py-3">Supplier</th>
-              <th className="px-4 py-3 text-right">Total</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Date</th>
+              <th className="px-4 py-3 text-right">Total</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
@@ -796,17 +796,17 @@ function PurchaseOrdersPageView() {
             ) : (
               visibleOrders.map((order) => (
                 <tr key={order.po_id} className="border-t border-[#e2e8f0]">
+                  <td className="px-4 py-3">{new Date(order.order_date).toLocaleDateString()}</td>
                   <td className="px-4 py-3 font-mono text-slate-900">
                     {order.reference_no || `#${order.po_id}`}
                   </td>
                   <td className="px-4 py-3">{order.supplier.name}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    {peso(Number(order.total_amount))}
-                  </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={order.status === "received" ? "completed" : order.status} />
                   </td>
-                  <td className="px-4 py-3">{new Date(order.order_date).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {peso(Number(order.total_amount))}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <button
