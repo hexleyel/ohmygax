@@ -382,7 +382,7 @@ function SettingsPageInner() {
                 onClick={() => showAddUser ? closeAddUser() : setShowAddUser(true)}
                 className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-700"
               >
-                {showAddUser ? "Cancel" : "+ Add User"}
+                {showAddUser ? "Cancel" : "New User"}
               </button>
             </div>
 

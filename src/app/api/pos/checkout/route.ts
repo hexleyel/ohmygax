@@ -53,6 +53,12 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
+      if (Number(product.base_price) <= 0 || Number(product.selling_price) <= 0) {
+        return NextResponse.json(
+          { error: `${product.name} has Pending pricing. Please set the price margin in Price Management before selling.` },
+          { status: 400 },
+        );
+      }
       const availableOldStock = stockTierQuantities(product).oldStock;
       if (availableOldStock < item.quantity) {
         return NextResponse.json(

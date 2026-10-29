@@ -56,6 +56,7 @@ function SuppliersPageView() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewingSupplier, setViewingSupplier] = useState<Supplier | null>(null);
   const [supplierFilter, setSupplierFilter] = useState<"active" | "inactive" | "all">("active");
+  const [supplierSearch, setSupplierSearch] = useState("");
   const [archiveTarget, setArchiveTarget] = useState<Supplier | null>(null);
   const [reactivateTarget, setReactivateTarget] = useState<Supplier | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
@@ -178,11 +179,20 @@ function SuppliersPageView() {
     return `${uom?.code.toUpperCase() ?? product.uom.toUpperCase()} · ${product.name}`;
   }
 
-  const visibleSuppliers = suppliers.filter((supplier) =>
-    supplierFilter === "all" || (supplierFilter === "inactive"
+  const normalizedSupplierSearch = supplierSearch.trim().toLocaleLowerCase();
+  const visibleSuppliers = suppliers.filter((supplier) => {
+    const matchesStatus = supplierFilter === "all" || (supplierFilter === "inactive"
       ? isInactiveSupplier(supplier)
-      : !isInactiveSupplier(supplier)),
-  );
+      : !isInactiveSupplier(supplier));
+    const searchableDetails = [
+      supplier.name,
+      supplier.address,
+      supplier.contact_person,
+      supplier.phone,
+      supplier.email,
+    ].join(" ").toLocaleLowerCase();
+    return matchesStatus && searchableDetails.includes(normalizedSupplierSearch);
+  });
 
   async function setSupplierStatus(supplier: Supplier, status: "active" | "inactive") {
     setStatusBusy(true);
@@ -237,36 +247,50 @@ function SuppliersPageView() {
             {suppliers.filter((supplier) => !isInactiveSupplier(supplier)).length} ACTIVE SUPPLIERS
           </p>
         </div>
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <span className="sr-only">Filter suppliers</span>
-          <select
-            value={supplierFilter}
-            onChange={(event) => setSupplierFilter(event.target.value as typeof supplierFilter)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <span className="sr-only">Filter suppliers</span>
+              <select
+                value={supplierFilter}
+                onChange={(event) => setSupplierFilter(event.target.value as typeof supplierFilter)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+              >
+                <option value="active">Active Suppliers</option>
+                <option value="inactive">Archived / Inactive Suppliers</option>
+                <option value="all">All Suppliers</option>
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Search suppliers</span>
+              <input
+                type="search"
+                value={supplierSearch}
+                onChange={(event) => setSupplierSearch(event.target.value)}
+                placeholder="Search suppliers"
+                className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400"
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (showForm) {
+                closeForm();
+                return;
+              }
+              setEditingId(null);
+              setForm(emptyForm);
+              setSelectedProducts([]);
+              setFieldErrors({});
+              setExpandedCategory(null);
+              setShowForm(true);
+            }}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
           >
-            <option value="active">Active Suppliers</option>
-            <option value="inactive">Archived / Inactive Suppliers</option>
-            <option value="all">All Suppliers</option>
-          </select>
-        </label>
-        <button
-          type="button"
-          onClick={() => {
-            if (showForm) {
-              closeForm();
-              return;
-            }
-            setEditingId(null);
-            setForm(emptyForm);
-            setSelectedProducts([]);
-            setFieldErrors({});
-            setExpandedCategory(null);
-            setShowForm(true);
-          }}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
-        >
-          + Add Supplier
-        </button>
+            New Supplier
+          </button>
+        </div>
       </div>
 
       {showForm ? (

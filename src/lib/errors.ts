@@ -12,3 +12,10 @@ export class ConflictError extends Error {
     this.name = "ConflictError";
   }
 }
+
+export class DuplicateBinLocationError extends Error {
+  constructor(location: string, productName: string) {
+    super(`Bin location ${location} is already assigned to active product ${productName}.`);
+    this.name = "DuplicateBinLocationError";
+  }
+}

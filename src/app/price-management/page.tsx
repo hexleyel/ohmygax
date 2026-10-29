@@ -9,7 +9,6 @@ import {
   calculateSellingPrice,
   validateMarginPricing,
 } from "@/lib/calc";
-import { peso } from "@/lib/format";
 import AdminOnly from "@/components/AdminOnly";
 
 type Product = {
@@ -21,7 +20,7 @@ type Product = {
   selling_price: number;
 };
 
-type Draft = { margin: string; selling: string };
+type Draft = { base: string; margin: string; selling: string };
 
 function PriceManagementPageView() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -49,37 +48,56 @@ function PriceManagementPageView() {
   }, []);
 
   function draftFor(product: Product): Draft {
+    const pending = Number(product.base_price) <= 0 || Number(product.selling_price) <= 0;
     return (
       drafts[product.product_id] ?? {
-        margin: String(product.margin_pct),
-        selling: Number(product.selling_price).toFixed(2),
+        base: String(product.base_price),
+        margin: pending ? "" : String(product.margin_pct),
+        selling: pending ? "" : Number(product.selling_price).toFixed(2),
       }
     );
   }
 
   /** Editing either field recomputes the other, so the two never disagree. */
   function editMargin(product: Product, margin: string) {
-    const base = Number(product.base_price);
+    const base = Number(draftFor(product).base);
     setDrafts((current) => ({
       ...current,
       [product.product_id]: {
+        ...draftFor(product),
         margin,
-        selling: calculateSellingPrice(base, Number(margin || 0)).toFixed(2),
+        selling: base > 0 && margin.trim() ? calculateSellingPrice(base, Number(margin)).toFixed(2) : "",
       },
     }));
   }
 
   function editSelling(product: Product, selling: string) {
-    const base = Number(product.base_price);
+    const draft = draftFor(product);
+    const base = Number(draft.base);
     setDrafts((current) => ({
       ...current,
       [product.product_id]: {
+        ...draft,
         // Null base means the margin is undefined; keep the previous value
         // rather than showing NaN while the user is still typing.
         margin:
           calculateMarginPct(base, Number(selling || 0))?.toFixed(2) ??
-          String(product.margin_pct),
+          draft.margin,
         selling,
+      },
+    }));
+  }
+
+  function editBase(product: Product, base: string) {
+    const draft = draftFor(product);
+    setDrafts((current) => ({
+      ...current,
+      [product.product_id]: {
+        ...draft,
+        base,
+        selling: base.trim() && draft.margin.trim()
+          ? calculateSellingPrice(Number(base), Number(draft.margin)).toFixed(2)
+          : "",
       },
     }));
   }
@@ -87,9 +105,14 @@ function PriceManagementPageView() {
   async function savePrice(product: Product) {
     setError("");
     const draft = draftFor(product);
-    const base = Number(product.base_price);
+    const base = Number(draft.base);
 
     const margin_pct = Number(draft.margin);
+
+    if (!draft.base.trim() || !draft.margin.trim()) {
+      setError(`${product.name}: enter both the base price and margin before saving.`);
+      return;
+    }
 
     // Same rule the API applies, so the two can't disagree.
     const pricingProblem = validateMarginPricing(base, margin_pct);
@@ -101,9 +124,13 @@ function PriceManagementPageView() {
       setError(`${product.name}: selling price can't be negative.`);
       return;
     }
+    if (calculateSellingPrice(base, margin_pct) <= 0) {
+      setError(`${product.name}: selling price must be above 0.`);
+      return;
+    }
 
     try {
-      await updateProduct(product.product_id, { margin_pct });
+      await updateProduct(product.product_id, { base_price: base, margin_pct });
       setDrafts((current) => {
         const next = { ...current };
         delete next[product.product_id];
@@ -175,19 +202,35 @@ function PriceManagementPageView() {
               products.map((product) => {
                 const draft = draftFor(product);
                 const dirty = drafts[product.product_id] !== undefined;
+                const pending = Number(product.base_price) <= 0 || Number(product.selling_price) <= 0;
                 return (
-                  <tr key={product.product_id} className="border-t border-[#e2e8f0]">
+                  <tr key={product.product_id} className={`border-t border-[#e2e8f0] ${pending ? "bg-amber-50/70" : ""}`}>
                     <td className="px-4 py-3">{product.sku}</td>
                     <td className="px-4 py-3">{product.name}</td>
-                    <td className="px-4 py-3">{peso(product.base_price)}</td>
                     <td className="px-4 py-3">
                       <input
                         type="number"
+                        min="0"
                         step="0.01"
-                        value={draft.margin}
-                        onChange={(e) => editMargin(product, e.target.value)}
-                        className="no-spinner w-20 rounded-lg border border-[#e2e8f0] bg-white px-2 py-1 text-center tabular-nums text-slate-900"
+                        aria-label={`Base price for ${product.name}`}
+                        value={draft.base}
+                        onChange={(event) => editBase(product, event.target.value)}
+                        className="no-spinner w-28 rounded-lg border border-[#e2e8f0] bg-white px-2 py-1 text-right tabular-nums text-slate-900"
                       />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          aria-label={`Margin percent for ${product.name}`}
+                          placeholder={pending ? "Pending" : "0"}
+                          value={draft.margin}
+                          onChange={(e) => editMargin(product, e.target.value)}
+                          className="no-spinner w-24 rounded-lg border border-[#e2e8f0] bg-white px-2 py-1 text-center tabular-nums text-slate-900"
+                        />
+                        {pending ? <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase text-amber-800">Pending</span> : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="relative w-32">
@@ -197,11 +240,15 @@ function PriceManagementPageView() {
                         <input
                           type="number"
                           step="0.01"
+                          aria-label={`Selling price for ${product.name}`}
+                          placeholder={pending ? "Pending" : "0.00"}
+                          readOnly={pending}
                           value={draft.selling}
                           onChange={(e) => editSelling(product, e.target.value)}
-                          className="no-spinner w-full rounded-lg border border-[#e2e8f0] bg-white py-1 pl-5 pr-2 text-right tabular-nums font-semibold text-slate-900"
+                          className="no-spinner w-full rounded-lg border border-[#e2e8f0] bg-white py-1 pl-5 pr-2 text-right tabular-nums font-semibold text-slate-900 read-only:bg-slate-50"
                         />
                       </div>
+                      {pending ? <span className="mt-1 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-800">Pricing required</span> : null}
                     </td>
                     <td className="px-4 py-3">
                       <button

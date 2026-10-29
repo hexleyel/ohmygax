@@ -227,7 +227,7 @@ function ProductsPageView() {
               onClick={startAdd}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
             >
-              + Add Product
+              New Product
             </button>
           ) : null}
         </div>

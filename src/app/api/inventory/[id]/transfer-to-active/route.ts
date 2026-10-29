@@ -6,6 +6,8 @@ import { stockTierQuantities } from "@/lib/stockTiers";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
+class PendingMarginError extends Error {}
+
 export async function POST(req: NextRequest, { params }: RouteParams) {
   try {
     requireAuth(req, "admin");
@@ -21,6 +23,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const product = await db.$transaction(async (tx) => {
       const current = await tx.product.findUnique({ where: { product_id: productId } });
       if (!current) throw new Error("Product not found.");
+      if (Number(current.base_price) <= 0 || Number(current.selling_price) <= 0) {
+        throw new PendingMarginError("Please set the price margin in Price Management before releasing stock for sale.");
+      }
 
       const tiers = stockTierQuantities(current);
       if (quantity > tiers.newStock) {
@@ -46,7 +51,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           product_id: productId,
           change_type: "transfer",
           quantity,
-          reason: "Reserve (New Stocks) to Active (Old Stocks)",
+          reason: "Warehouse to Store: Reserve Stock to In Stock",
         },
       });
 
@@ -57,6 +62,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof AuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof PendingMarginError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     console.error("Reserve to active stock transfer failed:", error);
     return NextResponse.json(

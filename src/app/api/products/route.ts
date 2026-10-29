@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import db from "@/lib/db";
 import { AuthError, requireAuth } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
-import { calculateSellingPrice } from "@/lib/calc";
 import { buildProductCode } from "@/lib/reference";
 import { serialize } from "@/lib/serialize";
 import { stockTierQuantities } from "@/lib/stockTiers";
 import { cylinderCategoryCodes } from "@/lib/categories";
+import { DuplicateBinLocationError } from "@/lib/errors";
+import { BIN_LOCATION_HINT, isBinLocation, normalizeBinLocation } from "@/lib/binLocations";
 
 export async function GET(req: NextRequest) {
   try {
@@ -92,8 +93,11 @@ export async function POST(req: NextRequest) {
 
     const base_price = Number(body.base_price) || 0;
     const margin_pct = Number(body.margin_pct) || 0;
-    const selling_price = calculateSellingPrice(base_price, margin_pct);
+    // New products remain unsellable until an admin explicitly saves pricing
+    // in Price Management. A zero selling price is the persisted Pending marker.
+    const selling_price = 0;
     const initialStock = Number(body.stock_qty) || 0;
+    const location = normalizeBinLocation(body.location);
 
     if (!String(body.name ?? "").trim()) {
       return NextResponse.json({ error: "Product name is required." }, { status: 400 });
@@ -101,11 +105,24 @@ export async function POST(req: NextRequest) {
     if (!String(body.category ?? "").trim()) {
       return NextResponse.json({ error: "Category is required." }, { status: 400 });
     }
+    if (location && location.length > 80) {
+      return NextResponse.json({ error: "Bin location must be 80 characters or fewer." }, { status: 400 });
+    }
+    if (location && !isBinLocation(location)) {
+      return NextResponse.json({ error: BIN_LOCATION_HINT }, { status: 400 });
+    }
 
     // Both statements run in one transaction: the row is created to obtain its
     // id, then the code is derived from that id. Without the transaction a
     // failure in between would leave a product wearing its TMP- placeholder.
     const coded = await db.$transaction(async (tx) => {
+      if (location) {
+        const occupied = await tx.product.findFirst({
+          where: { location, status: "active" },
+          select: { name: true },
+        });
+        if (occupied) throw new DuplicateBinLocationError(location, occupied.name);
+      }
       const created = await tx.product.create({
         data: {
           sku: `TMP-${Date.now()}`,
@@ -122,16 +139,29 @@ export async function POST(req: NextRequest) {
           empty_qty: Number(body.empty_qty) || 0,
           min_stock: Number(body.min_stock) || 0,
           max_stock: Number(body.max_stock) || 0,
-          location: body.location || null,
+          location,
           status: "active",
         },
       });
 
+      let assignedLocation = location;
+      if (!assignedLocation) {
+        assignedLocation = `BIN-PRODUCT-${created.product_id}-01`;
+        let suffix = 1;
+        while (await tx.product.findFirst({
+          where: { location: assignedLocation, status: "active" },
+          select: { product_id: true },
+        })) {
+          suffix += 1;
+          assignedLocation = `BIN-PRODUCT-${created.product_id}-${String(suffix).padStart(2, "0")}`;
+        }
+      }
+
       return tx.product.update({
         where: { product_id: created.product_id },
-        data: { sku: buildProductCode(body.category, created.product_id) },
+        data: { sku: buildProductCode(body.category, created.product_id), location: assignedLocation },
       });
-    });
+    }, { isolationLevel: "Serializable" });
 
     await writeAuditLog(db, {
       user: session,
@@ -144,6 +174,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (error instanceof AuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof DuplicateBinLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     throw error;
   }

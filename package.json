@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "eslint",
     "setup": "node scripts/setup-db.js",
+    "migrate:po-statuses": "node scripts/migrate-po-statuses.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

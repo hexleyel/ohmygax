@@ -16,9 +16,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       include: { items: true },
     });
     if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    if (order.status !== "pending") {
+    if (order.status !== "issued") {
       return NextResponse.json(
-        { error: "Only pending orders can be confirmed." },
+        { error: "Only issued purchase orders can be confirmed." },
         { status: 409 },
       );
     }
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       return sum + item.unit_cost * item.quantity;
     }, 0);
 
-    const confirmed = await db.$transaction(async (tx) => {
+    const updatedOrder = await db.$transaction(async (tx) => {
       for (const item of order.items) {
         const submitted = submittedItems.get(item.id)!;
         await tx.purchaseOrderItem.update({
@@ -67,7 +67,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       }
       return tx.purchaseOrder.update({
         where: { po_id: poId },
-        data: { status: "confirmed", total_amount: totalAmount },
+        data: { status: "pending", total_amount: totalAmount },
         include: { supplier: true, items: { include: { product: true } } },
       });
     });
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       details: `Confirmed ${order.reference_no || `PO #${order.po_id}`}`,
     });
 
-    return NextResponse.json(serialize(confirmed));
+    return NextResponse.json(serialize(updatedOrder));
   } catch (error) {
     if (error instanceof AuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

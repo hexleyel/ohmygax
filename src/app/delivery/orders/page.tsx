@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { listCustomers } from "@/utils/api-services/customerService";
 import { listProducts } from "@/utils/api-services/productService";
 import {
@@ -33,6 +34,33 @@ type Delivery = {
   customer: { name: string; phone?: string | null; email?: string | null };
   items: { product_id: number; product: { name: string; selling_price?: number | string }; quantity: number; without_cylinder_qty?: number; cylinder_fee?: number | string }[];
 };
+
+type DeliveryLineInput = {
+  product_id: number;
+  product_search: string;
+  product_family: string;
+  variant_search: string;
+  quantity: number;
+  without_cylinder_qty: number;
+};
+
+function emptyDeliveryLine(): DeliveryLineInput {
+  return { product_id: 0, product_search: "", product_family: "", variant_search: "", quantity: 0, without_cylinder_qty: 0 };
+}
+
+function deliveryProductFamily(product: any): string | null {
+  if (String(product?.category ?? "").toLowerCase() === "cylinder" || product?.is_cylinder) return "LPG";
+  if (/regulator/i.test(String(product?.name ?? ""))) return "Regulator";
+  if (/hose/i.test(String(product?.name ?? ""))) return "Hose";
+  return null;
+}
+
+function deliveryProductVariantLabel(product: any) {
+  const size = String(product?.name ?? "").match(/\d+(?:\.\d+)?\s*(?:kg|m)\b/i)?.[0];
+  if (size) return size.replace(/\s+/g, "").toLowerCase();
+  if (String(product?.category ?? "").toLowerCase() === "cylinder" && String(product?.name ?? "").trim().toLowerCase() === "lpg") return "Cylinder";
+  return String(product?.uom ?? "").toLowerCase() === "pcs" ? "Pcs" : product?.uom ?? "";
+}
 
 function todayInputDate() {
   const now = new Date();
@@ -80,7 +108,9 @@ export default function DeliveryOrdersPage() {
   const [paymentMethod, setPaymentMethod] = useState<"cod" | "gcash">("cod");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [items, setItems] = useState([{ product_id: 0, quantity: 0, without_cylinder_qty: 0 }]);
+  const [items, setItems] = useState<DeliveryLineInput[]>([emptyDeliveryLine()]);
+  const [activeProductLine, setActiveProductLine] = useState<number | null>(null);
+  const [activeVariantLine, setActiveVariantLine] = useState<number | null>(null);
   const [settings, setSettings] = useState<Record<string, string>>({ cylinder_exchange_fee: "150" });
   const [gcashMobile, setGcashMobile] = useState("");
   const [gcashReference, setGcashReference] = useState("");
@@ -94,7 +124,9 @@ export default function DeliveryOrdersPage() {
   const [editAddress, setEditAddress] = useState("");
   const [editDeliveryDate, setEditDeliveryDate] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  const [editItems, setEditItems] = useState<{ product_id: number; quantity: number; without_cylinder_qty: number }[]>([]);
+  const [editItems, setEditItems] = useState<DeliveryLineInput[]>([]);
+  const [activeEditProductLine, setActiveEditProductLine] = useState<number | null>(null);
+  const [activeEditVariantLine, setActiveEditVariantLine] = useState<number | null>(null);
   const [editPaymentMethod, setEditPaymentMethod] = useState<"cod" | "gcash">("cod");
   const [editGcashMobile, setEditGcashMobile] = useState("");
   const [editGcashReference, setEditGcashReference] = useState("");
@@ -129,6 +161,9 @@ export default function DeliveryOrdersPage() {
     return Boolean(product?.is_cylinder) || String(product?.category ?? "").toLowerCase() === "cylinder";
   }
 
+  const productFamilies = (["LPG", "Regulator", "Hose"] as const)
+    .filter((family) => products.some((product) => deliveryProductFamily(product) === family));
+
   function updateWithoutCylinder(index: number, value: number, edit = false) {
     const updater = edit ? setEditItems : setItems;
     updater((current: any[]) => current.map((line, i) => {
@@ -155,17 +190,65 @@ export default function DeliveryOrdersPage() {
       setDuplicateWarning("Product is already on this order, change the quantity on the existing line instead.");
       return;
     }
+    const product = products.find((candidate) => candidate.product_id === productId);
+    const family = product ? deliveryProductFamily(product) ?? "" : "";
     setItems((current) => current.map((item, i) =>
-      i === index ? { ...item, product_id: productId, without_cylinder_qty: 0 } : item,
+      i === index ? {
+        ...item,
+        product_id: productId,
+        product_family: family,
+        product_search: family,
+        variant_search: product ? deliveryProductVariantLabel(product) : "",
+        without_cylinder_qty: 0,
+      } : item,
     ));
+    setActiveVariantLine(null);
+  }
+
+  function selectProductFamily(index: number, family: string, edit = false) {
+    const familyProduct = products.find((product) => deliveryProductFamily(product) === family);
+    const updater = edit ? setEditItems : setItems;
+    updater((current) => current.map((line, i) => i === index ? {
+      ...line,
+      product_id: 0,
+      product_family: family,
+      product_search: family,
+      variant_search: "",
+      without_cylinder_qty: 0,
+    } : line));
+    if (edit) {
+      setActiveEditProductLine(null);
+      setActiveEditVariantLine(familyProduct ? index : null);
+    } else {
+      setActiveProductLine(null);
+      setActiveVariantLine(familyProduct ? index : null);
+    }
   }
 
   function removeItemLine(index: number) {
     setDuplicateWarning("");
     setItems((current) => current.length === 1
-      ? [{ product_id: 0, quantity: 0, without_cylinder_qty: 0 }]
+      ? [emptyDeliveryLine()]
       : current.filter((_, i) => i !== index),
     );
+  }
+
+  function searchItemProduct(index: number, search: string, edit = false) {
+    const update = edit ? setEditItems : setItems;
+    update((current) => current.map((line, i) => i === index
+      ? { ...line, product_id: 0, product_family: "", product_search: search, variant_search: "", without_cylinder_qty: 0 }
+      : line));
+    if (edit) setActiveEditProductLine(index);
+    else setActiveProductLine(index);
+  }
+
+  function searchItemVariant(index: number, search: string, edit = false) {
+    const update = edit ? setEditItems : setItems;
+    update((current) => current.map((line, i) => i === index
+      ? { ...line, product_id: 0, variant_search: search, without_cylinder_qty: 0 }
+      : line));
+    if (edit) setActiveEditVariantLine(index);
+    else setActiveVariantLine(index);
   }
 
   function openEditDelivery(delivery: Delivery) {
@@ -174,7 +257,17 @@ export default function DeliveryOrdersPage() {
     setEditAddress(delivery.address);
     setEditDeliveryDate(delivery.eta?.slice(0, 10) ?? todayInputDate());
     setEditNotes(delivery.notes ?? "");
-    setEditItems(delivery.items.map((item) => ({ product_id: item.product_id, quantity: item.quantity, without_cylinder_qty: Number(item.without_cylinder_qty) || 0 })));
+    setEditItems(delivery.items.map((item) => {
+      const product = products.find((candidate) => candidate.product_id === item.product_id) ?? item.product;
+      return {
+        product_id: item.product_id,
+        product_search: deliveryProductFamily(product) ?? "",
+        product_family: deliveryProductFamily(product) ?? "",
+        variant_search: deliveryProductVariantLabel(product),
+        quantity: item.quantity,
+        without_cylinder_qty: Number(item.without_cylinder_qty) || 0,
+      };
+    }));
     setEditPaymentMethod(delivery.payment_method === "gcash" ? "gcash" : "cod");
     setEditGcashMobile(delivery.gcash_mobile ?? "");
     setEditGcashReference(delivery.gcash_reference ?? "");
@@ -187,7 +280,17 @@ export default function DeliveryOrdersPage() {
       setEditError("Product is already on this order, change the quantity on the existing line instead.");
       return;
     }
-    setEditItems((current) => current.map((item, i) => i === index ? { ...item, product_id: productId, without_cylinder_qty: 0 } : item));
+    const product = products.find((candidate) => candidate.product_id === productId);
+    const family = product ? deliveryProductFamily(product) ?? "" : "";
+    setEditItems((current) => current.map((item, i) => i === index ? {
+      ...item,
+      product_id: productId,
+      product_family: family,
+      product_search: family,
+      variant_search: product ? deliveryProductVariantLabel(product) : "",
+      without_cylinder_qty: 0,
+    } : item));
+    setActiveEditVariantLine(null);
   }
 
   async function handleEditSubmit(e: React.FormEvent) {
@@ -214,7 +317,13 @@ export default function DeliveryOrdersPage() {
         gcash_reference: editPaymentMethod === "gcash" ? editGcashReference : undefined,
         gcashMobileNumber: editPaymentMethod === "gcash" ? editGcashMobile : undefined,
         gcashReferenceNumber: editPaymentMethod === "gcash" ? editGcashReference : undefined,
-        items: editItems.map((item) => ({ ...item, withoutCylinderQty: item.without_cylinder_qty, withoutCylinder: item.without_cylinder_qty > 0 })),
+        items: editItems.map((item) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          without_cylinder_qty: item.without_cylinder_qty,
+          withoutCylinderQty: item.without_cylinder_qty,
+          withoutCylinder: item.without_cylinder_qty > 0,
+        })),
       });
       setEditingDelivery(null);
       await load();
@@ -292,7 +401,8 @@ export default function DeliveryOrdersPage() {
       gcashMobileNumber: paymentMethod === "gcash" ? gcashMobile : undefined,
       gcashReferenceNumber: paymentMethod === "gcash" ? gcashReference : undefined,
       items: items.filter((i) => i.product_id > 0).map((item) => ({
-        ...item,
+        product_id: item.product_id,
+        quantity: item.quantity,
         productId: item.product_id,
         price: Number(products.find((product) => product.product_id === item.product_id)?.selling_price || 0),
         withoutCylinderQty: item.without_cylinder_qty,
@@ -311,7 +421,7 @@ export default function DeliveryOrdersPage() {
     setGcashMobile("");
     setGcashReference("");
     setDeliveryError("");
-    setItems([{ product_id: 0, quantity: 0, without_cylinder_qty: 0 }]);
+    setItems([emptyDeliveryLine()]);
     setDuplicateWarning("");
     load();
   }
@@ -405,7 +515,7 @@ export default function DeliveryOrdersPage() {
           onClick={() => setShowForm((v) => !v)}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
         >
-          {showForm ? "Close" : "+ New Delivery"}
+          {showForm ? "Close" : "New Delivery"}
         </button>
         </div>
       </div>
@@ -508,54 +618,25 @@ export default function DeliveryOrdersPage() {
             onChange={(e) => setNotes(e.target.value)}
           />
 
-          <div className="mb-2 grid grid-cols-[1fr_70px_90px_36px] gap-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:grid-cols-[1fr_120px_120px_40px] sm:text-xs">
-            <span>Product</span>
-            <span>Quantity</span>
-            <span>Without cylinder</span>
-            <span />
-          </div>
-          {items.map((item, index) => (
-              <div key={index} className="mb-2 grid grid-cols-[1fr_70px_90px_36px] gap-2 sm:grid-cols-[1fr_120px_120px_40px]">
-              <select
-                required
-                aria-label="Product"
-                className="rounded-lg border border-[#e2e8f0] bg-[#f1f5f9] px-3 py-2"
-                value={item.product_id}
-                onChange={(e) => selectProduct(index, Number(e.target.value))}
-              >
-                <option value={0}>Select product</option>
-                {products.map((p) => (
-                  <option key={p.product_id} value={p.product_id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                aria-label="Quantity"
-                placeholder="Qty"
-                className="no-spinner rounded-lg border border-[#e2e8f0] bg-[#f1f5f9] px-3 py-2"
-                value={item.quantity || ""}
-                onChange={(e) => setItems((current) => current.map((it, i) =>
-                  i === index ? { ...it, quantity: Number(e.target.value), without_cylinder_qty: Math.min(it.without_cylinder_qty, Number(e.target.value) || 0) } : it,
-                ))}
-              />
-              {isCylinderProduct(products.find((p) => p.product_id === item.product_id)) ? (
-                <label className="flex items-center gap-1"><input type="number" aria-label="Without cylinder quantity" min={0} max={item.quantity} step={1} value={item.without_cylinder_qty || ""} onChange={(event) => updateWithoutCylinder(index, Number(event.target.value))} className="no-spinner w-full rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-right tabular-nums" /><span className="text-[10px] text-slate-400">/{item.quantity}</span></label>
-              ) : <span />}
-              <button
-                type="button"
-                onClick={() => removeItemLine(index)}
-                title="Remove this line"
-                aria-label="Remove product line"
-                className="h-10 rounded-lg border border-[#e2e8f0] text-sm text-slate-500 transition hover:border-red-500 hover:text-red-600"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+          <DeliveryLineEntryTable
+            mode="create"
+            lines={items}
+            products={products}
+            productFamilies={productFamilies}
+            activeProductLine={activeProductLine}
+            activeVariantLine={activeVariantLine}
+            onProductSearch={(index, search) => searchItemProduct(index, search)}
+            onProductFocus={setActiveProductLine}
+            onVariantFocus={setActiveVariantLine}
+            onProductFamilySelect={(index, family) => selectProductFamily(index, family)}
+            onVariantSearch={(index, search) => searchItemVariant(index, search)}
+            onVariantSelect={(index, productId) => selectProduct(index, productId)}
+            onQuantityChange={(index, quantity) => setItems((current) => current.map((line, i) => i === index
+              ? { ...line, quantity, without_cylinder_qty: Math.min(line.without_cylinder_qty, quantity || 0) }
+              : line))}
+            onCylinderCountChange={(index, count) => updateWithoutCylinder(index, count)}
+            onRemove={removeItemLine}
+          />
           {duplicateWarning ? (
             <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
               {duplicateWarning}
@@ -563,7 +644,7 @@ export default function DeliveryOrdersPage() {
           ) : null}
           <button
             type="button"
-            onClick={() => setItems((c) => [...c, { product_id: 0, quantity: 0, without_cylinder_qty: 0 }])}
+            onClick={() => setItems((current) => [...current, emptyDeliveryLine()])}
             className="mb-4 text-xs text-blue-700"
           >
             + Add line
@@ -652,51 +733,30 @@ export default function DeliveryOrdersPage() {
               </div>
             ) : null}
 
-            <div className="mb-2 hidden grid-cols-[1fr_80px_100px_40px] gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-slate-500 sm:grid">
-              <span>Product</span><span>Quantity</span><span>Without cylinder</span><span />
-            </div>
-            {editItems.map((item, index) => (
-              <div key={index} className="mb-2 grid grid-cols-[1fr_70px_90px_36px] gap-2 sm:grid-cols-[1fr_80px_100px_40px]">
-                <select
-                  required
-                  aria-label="Product"
-                  className="rounded-lg border border-[#e2e8f0] bg-white px-3 py-2"
-                  value={item.product_id}
-                  onChange={(e) => selectEditProduct(index, Number(e.target.value))}
-                >
-                  <option value={0}>Select product</option>
-                  {products.map((product) => (
-                    <option key={product.product_id} value={product.product_id}>{product.name}</option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  aria-label="Quantity"
-                  className="no-spinner rounded-lg border border-[#e2e8f0] px-3 py-2"
-                  value={item.quantity || ""}
-                  onChange={(e) => setEditItems((current) => current.map((line, i) =>
-                    i === index ? { ...line, quantity: Number(e.target.value), without_cylinder_qty: Math.min(line.without_cylinder_qty, Number(e.target.value) || 0) } : line,
-                  ))}
-                />
-                {isCylinderProduct(products.find((product) => product.product_id === item.product_id)) ? (
-                  <label className="flex items-center gap-1"><input type="number" aria-label="Without cylinder quantity" min={0} max={item.quantity} step={1} value={item.without_cylinder_qty || ""} onChange={(event) => updateWithoutCylinder(index, Number(event.target.value), true)} className="no-spinner w-full rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-right tabular-nums" /><span className="text-[10px] text-slate-400">/{item.quantity}</span></label>
-                ) : <span />}
-                <button
-                  type="button"
-                  aria-label="Remove product line"
-                  onClick={() => setEditItems((current) => current.length === 1
-                    ? [{ product_id: 0, quantity: 0, without_cylinder_qty: 0 }]
-                    : current.filter((_, i) => i !== index),
-                  )}
-                  className="h-10 rounded-lg border border-[#e2e8f0] text-slate-500 hover:border-red-500 hover:text-red-600"
-                >×</button>
-              </div>
-            ))}
+            <DeliveryLineEntryTable
+              mode="edit"
+              lines={editItems}
+              products={products}
+              productFamilies={productFamilies}
+              activeProductLine={activeEditProductLine}
+              activeVariantLine={activeEditVariantLine}
+              onProductSearch={(index, search) => searchItemProduct(index, search, true)}
+              onProductFocus={setActiveEditProductLine}
+              onVariantFocus={setActiveEditVariantLine}
+              onProductFamilySelect={(index, family) => selectProductFamily(index, family, true)}
+              onVariantSearch={(index, search) => searchItemVariant(index, search, true)}
+              onVariantSelect={(index, productId) => selectEditProduct(index, productId)}
+              onQuantityChange={(index, quantity) => setEditItems((current) => current.map((line, i) => i === index
+                ? { ...line, quantity, without_cylinder_qty: Math.min(line.without_cylinder_qty, quantity || 0) }
+                : line))}
+              onCylinderCountChange={(index, count) => updateWithoutCylinder(index, count, true)}
+              onRemove={(index) => setEditItems((current) => current.length === 1
+                ? [emptyDeliveryLine()]
+                : current.filter((_, i) => i !== index))}
+            />
             <button
               type="button"
-              onClick={() => setEditItems((current) => [...current, { product_id: 0, quantity: 0, without_cylinder_qty: 0 }])}
+              onClick={() => setEditItems((current) => [...current, emptyDeliveryLine()])}
               className="mb-3 text-xs font-semibold text-blue-700"
             >
               + Add line
@@ -900,40 +960,73 @@ export default function DeliveryOrdersPage() {
             <div className="space-y-5 p-5 sm:p-6">
               <section>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Customer &amp; Shipping</h3>
-                <div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2">
-                  <div><p className="text-xs text-slate-500">Customer</p><p className="font-medium">{viewingDelivery.customer.name}</p></div>
-                  <div><p className="text-xs text-slate-500">Delivery Location / Address</p><p className="font-medium">{viewingDelivery.address || "—"}</p></div>
-                  <div><p className="text-xs text-slate-500">Payment Method</p><p className="font-medium">{viewingDelivery.payment_method === "gcash" ? "GCash" : viewingDelivery.payment_method ? "COD" : "—"}</p></div>
-                  {viewingDelivery.payment_method === "gcash" ? <>
-                    <div><p className="text-xs text-slate-500">GCash Mobile Number</p><p className="font-medium tabular-nums">{viewingDelivery.gcash_mobile || "—"}</p></div>
-                    <div><p className="text-xs text-slate-500">Reference Number</p><p className="font-medium tabular-nums">{viewingDelivery.gcash_reference || "—"}</p></div>
-                  </> : null}
-                  {viewingDelivery.customer.phone ? <div><p className="text-xs text-slate-500">Contact</p><p className="font-medium">{viewingDelivery.customer.phone}</p></div> : null}
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full min-w-[640px] text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Customer</th>
+                        <th className="px-4 py-3">Delivery Location</th>
+                        <th className="px-4 py-3">Payment Method</th>
+                        <th className="px-4 py-3">Contact Number</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      <tr>
+                        <td className="px-4 py-3 font-medium">{viewingDelivery.customer.name}</td>
+                        <td className="px-4 py-3 font-medium">{viewingDelivery.address || "—"}</td>
+                        <td className="px-4 py-3 font-medium">
+                          {viewingDelivery.payment_method === "gcash" ? "GCash" : viewingDelivery.payment_method ? "COD" : "—"}
+                          {viewingDelivery.payment_method === "gcash" ? (
+                            <span className="mt-1 block text-xs font-normal text-slate-500">
+                              {viewingDelivery.gcash_mobile ? `Mobile: ${viewingDelivery.gcash_mobile}` : null}
+                              {viewingDelivery.gcash_mobile && viewingDelivery.gcash_reference ? " · " : null}
+                              {viewingDelivery.gcash_reference ? `Ref: ${viewingDelivery.gcash_reference}` : null}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 font-medium tabular-nums">{viewingDelivery.customer.phone || "—"}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </section>
               <section>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Order Items</h3>
                 <div className="overflow-x-auto rounded-xl border border-slate-200">
                   <table className="w-full min-w-[640px] text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Product</th><th className="px-4 py-3 text-right">Qty</th><th className="px-4 py-3 text-right">Unit Price</th><th className="px-4 py-3 text-right">Subtotal</th><th className="px-4 py-3 text-right">Cylinder Fee</th></tr></thead>
+                    <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Product</th><th className="px-4 py-3 text-right">Qty</th><th className="px-4 py-3 text-right">Unit Price</th><th className="px-4 py-3 text-right">Cylinder Fee</th><th className="px-4 py-3 text-right">Subtotal</th></tr></thead>
                     <tbody className="divide-y divide-slate-100">
                       {viewingDelivery.items.map((item, index) => {
                         const unitPrice = Number(item.product.selling_price || 0);
-                        return <tr key={`${item.product_id}-${index}`}><td className="px-4 py-3 font-medium">{item.product.name}{Number(item.without_cylinder_qty) > 0 ? <span className="block text-xs font-normal text-slate-500">{item.without_cylinder_qty} without cylinder</span> : null}</td><td className="px-4 py-3 text-right tabular-nums">{item.quantity}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(unitPrice)}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(unitPrice * item.quantity)}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(Number(item.cylinder_fee || 0))}</td></tr>;
+                        return <tr key={`${item.product_id}-${index}`}><td className="px-4 py-3 font-medium">{item.product.name}{Number(item.without_cylinder_qty) > 0 ? <span className="block text-xs font-normal text-slate-500">{item.without_cylinder_qty} without cylinder</span> : null}</td><td className="px-4 py-3 text-right tabular-nums">{item.quantity}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(unitPrice)}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(Number(item.cylinder_fee || 0))}</td><td className="px-4 py-3 text-right tabular-nums">{formatPeso(unitPrice * item.quantity)}</td></tr>;
                       })}
                     </tbody>
+                    <tfoot className="border-t border-slate-200">
+                      <tr className="text-sm text-slate-600">
+                        <td colSpan={4} className="px-4 pt-4 text-right">Items subtotal</td>
+                        <td className="px-4 pt-4 text-right tabular-nums">{formatPeso(viewingDelivery.items.reduce((sum, item) => sum + Number(item.product.selling_price || 0) * item.quantity, 0))}</td>
+                      </tr>
+                      <tr className="text-sm text-slate-600">
+                        <td colSpan={4} className="px-4 pt-2 text-right">VAT Breakdown ({vatRate}%)</td>
+                        <td className="px-4 pt-2 text-right tabular-nums">{formatPeso(calculateVatAmount(viewingDelivery.items.reduce((sum, item) => sum + Number(item.product.selling_price || 0) * item.quantity, 0), vatRate))}</td>
+                      </tr>
+                      {viewingDelivery.items.some((item) => Number(item.cylinder_fee || 0) > 0) ? (
+                        <tr className="text-sm text-slate-600">
+                          <td colSpan={4} className="px-4 pt-2 text-right">Cylinder exchange/deposit fee</td>
+                          <td className="px-4 pt-2 text-right tabular-nums">{formatPeso(viewingDelivery.items.reduce((sum, item) => sum + Number(item.cylinder_fee || 0), 0))}</td>
+                        </tr>
+                      ) : null}
+                      <tr className="text-base font-semibold text-slate-900">
+                        <td colSpan={4} className="px-4 pb-3 pt-3 text-right">Total Amount Due</td>
+                        <td className="px-4 pb-3 pt-3 text-right tabular-nums">{formatPeso(viewingDelivery.total_amount)}</td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </section>
-              <section className="grid gap-4 sm:grid-cols-2">
-                <div><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Delivery Notes</h3><p className="min-h-16 rounded-xl bg-slate-50 p-4 text-sm text-slate-700">{viewingDelivery.notes?.trim() || "No delivery notes."}</p></div>
-                <div className="rounded-xl border border-slate-200 p-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Amount</h3>
-                  <div className="mt-3 flex items-center justify-between text-sm text-slate-600"><span>Items subtotal</span><span>{formatPeso(viewingDelivery.items.reduce((sum, item) => sum + Number(item.product.selling_price || 0) * item.quantity, 0))}</span></div>
-                  <div className="mt-2 flex items-center justify-between text-sm text-slate-600"><span>VAT Breakdown ({vatRate}%)</span><span>{formatPeso(calculateVatAmount(viewingDelivery.items.reduce((sum, item) => sum + Number(item.product.selling_price || 0) * item.quantity, 0), vatRate))}</span></div>
-                  {viewingDelivery.items.some((item) => Number(item.cylinder_fee || 0) > 0) ? <div className="mt-2 flex items-center justify-between text-sm text-slate-600"><span>Cylinder exchange/deposit fee</span><span>{formatPeso(viewingDelivery.items.reduce((sum, item) => sum + Number(item.cylinder_fee || 0), 0))}</span></div> : null}
-                  <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 font-semibold text-slate-900"><span>Total Amount Due</span><span className="tabular-nums">{formatPeso(viewingDelivery.total_amount)}</span></div>
-                </div>
+              <section>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Delivery Notes</h3>
+                <p className="min-h-16 rounded-xl bg-slate-50 p-4 text-sm text-slate-700">{viewingDelivery.notes?.trim() || "No delivery notes."}</p>
               </section>
             </div>
           </section>
@@ -1040,6 +1133,230 @@ function ReviewAmount({ label, value }: { label: string; value: number }) {
     <div className="flex justify-between gap-4">
       <dt>{label}</dt>
       <dd className="tabular-nums">{formatPeso(value)}</dd>
+    </div>
+  );
+}
+
+function DeliveryLineEntryTable({
+  mode,
+  lines,
+  products,
+  productFamilies,
+  activeProductLine,
+  activeVariantLine,
+  onProductSearch,
+  onProductFocus,
+  onVariantFocus,
+  onProductFamilySelect,
+  onVariantSearch,
+  onVariantSelect,
+  onQuantityChange,
+  onCylinderCountChange,
+  onRemove,
+}: {
+  mode: "create" | "edit";
+  lines: DeliveryLineInput[];
+  products: any[];
+  productFamilies: readonly string[];
+  activeProductLine: number | null;
+  activeVariantLine: number | null;
+  onProductSearch: (index: number, search: string) => void;
+  onProductFocus: (index: number | null) => void;
+  onVariantFocus: (index: number | null) => void;
+  onProductFamilySelect: (index: number, family: string) => void;
+  onVariantSearch: (index: number, search: string) => void;
+  onVariantSelect: (index: number, productId: number) => void;
+  onQuantityChange: (index: number, quantity: number) => void;
+  onCylinderCountChange: (index: number, count: number) => void;
+  onRemove: (index: number) => void;
+}) {
+  const [dropdownPosition, setDropdownPosition] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+  const activeDropdown = activeProductLine !== null
+    ? { type: "product" as const, index: activeProductLine }
+    : activeVariantLine !== null
+      ? { type: "variant" as const, index: activeVariantLine }
+      : null;
+
+  useEffect(() => {
+    if (!activeDropdown) {
+      setDropdownPosition(null);
+      return;
+    }
+    const inputId = `${mode}-delivery-${activeDropdown.type}-${activeDropdown.index}`;
+    const updatePosition = () => {
+      const input = document.getElementById(inputId);
+      if (!input) return;
+      const rect = input.getBoundingClientRect();
+      setDropdownPosition({
+        left: rect.left,
+        top: rect.bottom,
+        width: rect.width,
+        maxHeight: Math.max(120, window.innerHeight - rect.bottom - 12),
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [activeDropdown?.index, activeDropdown?.type, mode]);
+
+  return (
+    <div className="mb-3 overflow-x-auto rounded-lg border border-[#e2e8f0]">
+      <table className="w-full min-w-[1180px] table-fixed text-sm">
+        <colgroup>
+          <col style={{ width: 260 }} />
+          <col style={{ width: 140 }} />
+          <col style={{ width: 130 }} />
+          <col style={{ width: 110 }} />
+          <col style={{ width: 150 }} />
+          <col style={{ width: 180 }} />
+          <col style={{ width: 150 }} />
+          <col style={{ width: 60 }} />
+        </colgroup>
+        <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="px-3 py-3 text-left">Product</th>
+            <th className="px-3 py-3 text-left">Category</th>
+            <th className="px-3 py-3 text-left">UOM / Size</th>
+            <th className="px-3 py-3 text-right">Quantity</th>
+            <th className="px-3 py-3 text-right">Unit Price (₱)</th>
+            <th className="px-3 py-3 text-right">Without Cylinder</th>
+            <th className="px-3 py-3 text-right">Subtotal</th>
+            <th className="px-3 py-3 text-center">Action</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {lines.map((line, index) => {
+            const product = products.find((candidate) => candidate.product_id === line.product_id);
+            const unitPrice = Number(product?.selling_price || 0);
+            const cylinder = Boolean(product?.is_cylinder) || String(product?.category ?? "").toLowerCase() === "cylinder";
+            const size = String(product?.name ?? "").match(/\d+(?:\.\d+)?\s*(?:kg|g|ml|l|m)\b/i)?.[0]?.replace(/\s+/g, "");
+            const uomSize = product ? size || product.uom || "—" : "";
+
+            return (
+              <tr key={`${mode}-${index}`}>
+                <td className="relative px-3 py-2">
+                  <input
+                    type="text"
+                    role="combobox"
+                    id={`${mode}-delivery-product-${index}`}
+                    aria-label="Product"
+                    aria-autocomplete="list"
+                    aria-expanded={activeProductLine === index}
+                    autoComplete="off"
+                    placeholder="Select LPG, Regulator, Hose"
+                    value={line.product_search}
+                    onChange={(event) => onProductSearch(index, event.target.value)}
+                    onFocus={() => onProductFocus(index)}
+                    onBlur={() => onProductFocus(null)}
+                    className="w-full min-w-0 rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-sm"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="text"
+                    aria-label="Category"
+                    readOnly
+                    value={product?.category ?? ""}
+                    className="w-full min-w-0 rounded-lg border border-[#e2e8f0] bg-slate-50 px-2 py-2 text-sm text-slate-600"
+                  />
+                </td>
+                <td className="relative px-3 py-2">
+                  <input
+                    type="text"
+                    aria-label="UOM / Size"
+                    id={`${mode}-delivery-variant-${index}`}
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={activeVariantLine === index}
+                    autoComplete="off"
+                    disabled={!line.product_family}
+                    placeholder={line.product_family ? "Search size or unit" : "Select product group"}
+                    value={line.variant_search || (line.product_id ? uomSize : "")}
+                    onFocus={() => line.product_family && onVariantFocus(index)}
+                    onBlur={() => onVariantFocus(null)}
+                    onChange={(event) => onVariantSearch(index, event.target.value)}
+                    className="w-full min-w-0 rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    required
+                    aria-label="Quantity"
+                    value={line.quantity || ""}
+                    onChange={(event) => onQuantityChange(index, Number(event.target.value))}
+                    className="no-spinner w-full rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-right tabular-nums"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="number"
+                    step="0.01"
+                    aria-label="Unit price in pesos"
+                    readOnly
+                    value={product ? unitPrice.toFixed(2) : ""}
+                    className="w-full rounded-lg border border-[#e2e8f0] bg-slate-50 px-2 py-2 text-right tabular-nums text-slate-600"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  {cylinder ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={0}
+                        max={line.quantity}
+                        step={1}
+                        aria-label="Empty cylinders not returned"
+                        value={line.without_cylinder_qty || ""}
+                        onChange={(event) => onCylinderCountChange(index, Number(event.target.value))}
+                        className="no-spinner w-full min-w-0 rounded-lg border border-[#e2e8f0] bg-white px-2 py-2 text-right tabular-nums"
+                      />
+                      <span className="shrink-0 text-[10px] text-slate-400">/{line.quantity || 0}</span>
+                    </div>
+                  ) : <span className="block text-right text-slate-400">—</span>}
+                </td>
+                <td className="px-3 py-2 text-right font-medium tabular-nums">
+                  {product ? formatPeso(unitPrice * line.quantity) : "—"}
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => onRemove(index)}
+                    title="Remove this line"
+                    aria-label="Remove product line"
+                    className="h-9 w-9 rounded-lg border border-[#e2e8f0] text-sm text-slate-500 transition hover:border-red-500 hover:text-red-600"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {activeDropdown && dropdownPosition && typeof document !== "undefined" ? (() => {
+        const line = lines[activeDropdown.index];
+        if (!line) return null;
+        const options = activeDropdown.type === "product"
+          ? productFamilies.filter((family) => !line.product_search.trim() || family.toLocaleLowerCase().includes(line.product_search.trim().toLocaleLowerCase()))
+          : products.filter((candidate) => deliveryProductFamily(candidate) === line.product_family && (!line.variant_search.trim() || `${deliveryProductVariantLabel(candidate)} ${candidate.name} ${candidate.sku ?? ""} ${candidate.uom ?? ""}`.toLocaleLowerCase().includes(line.variant_search.trim().toLocaleLowerCase()))).slice(0, 20);
+        return createPortal(
+          <div role="listbox" style={{ position: "fixed", left: dropdownPosition.left, top: dropdownPosition.top, width: dropdownPosition.width, maxHeight: dropdownPosition.maxHeight }} className="z-[100] overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+            {options.length ? options.map((option: any) => activeDropdown.type === "product" ? (
+              <button key={option} type="button" role="option" aria-selected={line.product_family === option} onMouseDown={(event) => event.preventDefault()} onClick={() => onProductFamilySelect(activeDropdown.index, option)} className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700">{option}</button>
+            ) : (
+              <button key={option.product_id} type="button" role="option" aria-selected={line.product_id === option.product_id} onMouseDown={(event) => event.preventDefault()} onClick={() => onVariantSelect(activeDropdown.index, option.product_id)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700"><span>{deliveryProductVariantLabel(option)}</span><span className="shrink-0 text-xs text-slate-500">{option.sku}</span></button>
+            )) : <p className="px-3 py-2 text-sm text-slate-500">{activeDropdown.type === "product" ? "No matching product groups." : "No matching sizes or units."}</p>}
+          </div>,
+          document.body,
+        );
+      })() : null}
     </div>
   );
 }

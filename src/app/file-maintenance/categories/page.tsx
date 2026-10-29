@@ -187,7 +187,7 @@ function CategoriesPageView() {
             View Archive
           </button>
           <button type="button" onClick={() => showForm ? clearForm() : startAdd()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
-            {showForm ? "Close Form" : "+ Add Category"}
+            {showForm ? "Close Form" : "New Category"}
           </button>
         </div>
       </div>

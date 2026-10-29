@@ -11,6 +11,7 @@ export async function GET(req: NextRequest) {
     requireAuth(req);
     const { searchParams } = new URL(req.url);
     const status = searchParams.get("status");
+    const receivableOnly = searchParams.get("receivableOnly") === "1";
     // Default to recent orders; consumers can request full history with all=1.
     const limitParam = Number(searchParams.get("limit"));
     const take = searchParams.get("all") === "1"
@@ -20,7 +21,11 @@ export async function GET(req: NextRequest) {
         : 5;
 
     const orders = await db.purchaseOrder.findMany({
-      where: status && status !== "all" ? { status } : undefined,
+      where: receivableOnly
+        ? { status: { notIn: ["issued", "cancelled"] } }
+        : status && status !== "all"
+          ? { status }
+          : undefined,
       include: {
         supplier: true,
         items: { include: { product: true } },
@@ -81,7 +86,7 @@ export async function POST(req: NextRequest) {
         supplier_id: Number(body.supplier_id),
         estimated_delivery: deliveryDate,
         total_amount,
-        status: "pending",
+        status: "issued",
         created_by: session.user_id,
         items: {
           create: items.map((item) => ({

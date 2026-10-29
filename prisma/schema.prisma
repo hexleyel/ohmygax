@@ -23,8 +23,11 @@ enum PaymentMethod {
 }
 
 enum POStatus {
+  issued
   pending
-  received
+  back_order @map("back-order")
+  completed @map("received")
+  cancelled
 }
 
 enum DeliveryStatus {
@@ -135,6 +138,7 @@ model Product {
   inventoryLogs      InventoryLog[]
   deliveryItems      DeliveryItem[]
 
+  @@index([location, status])
   @@map("products")
 }
 

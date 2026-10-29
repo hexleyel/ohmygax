@@ -94,7 +94,7 @@ export function deriveOrderStatus(lines: { receive_status: string }[]) {
   if (lines.length === 0) return "pending";
   if (lines.every((l) => l.receive_status === "complete")) return "received";
   if (lines.some((l) => l.receive_status === "back-order")) return "back-order";
-  if (lines.some((l) => l.receive_status === "complete")) return "confirmed";
+  if (lines.some((l) => l.receive_status === "complete")) return "pending";
   return "pending";
 }
 

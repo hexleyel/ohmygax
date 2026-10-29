@@ -111,7 +111,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 10,
       max_stock: 100,
-      location: "RACK-A1",
+      location: "RACK-A1-01",
     },
     {
       sku: "LPG-11",
@@ -125,7 +125,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 8,
       max_stock: 80,
-      location: "RACK-A2",
+      location: "RACK-A2-01",
     },
     {
       sku: "LPG-22",
@@ -139,7 +139,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 5,
       max_stock: 50,
-      location: "RACK-B1",
+      location: "RACK-B1-01",
     },
     {
       sku: "LPG-50",
@@ -153,7 +153,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 3,
       max_stock: 25,
-      location: "RACK-B2",
+      location: "RACK-B2-01",
     },
     {
       sku: "ACC-REG-01",
@@ -167,7 +167,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 10,
       max_stock: 60,
-      location: "SHELF-C1",
+      location: "SHELF-C1-01",
     },
     {
       sku: "ACC-HOSE-01",
@@ -181,7 +181,7 @@ async function main() {
       empty_qty: 0,
       min_stock: 15,
       max_stock: 60,
-      location: "SHELF-C2",
+      location: "SHELF-C2-01",
     },
   ];
 
@@ -192,7 +192,7 @@ async function main() {
 
     const created = await prisma.product.upsert({
       where: { sku: product.sku },
-      update: {},
+      update: { location: product.location },
       create: { ...product, selling_price, status: "active" },
     });
 

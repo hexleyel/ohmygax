@@ -3,9 +3,10 @@ import db from "@/lib/db";
 import { AuthError, requireAuth } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
 import { cylinderCategoryCodes } from "@/lib/categories";
-import { InsufficientStockError } from "@/lib/errors";
+import { DuplicateBinLocationError, InsufficientStockError } from "@/lib/errors";
 import { serialize } from "@/lib/serialize";
 import { stockTierQuantities } from "@/lib/stockTiers";
+import { BIN_LOCATION_HINT, isBinLocation } from "@/lib/binLocations";
 import {
   deriveOrderStatus,
   isLineStatus,
@@ -38,7 +39,8 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const item_id = Number(body.item_id);
     const status = String(body.status ?? "complete") as LineStatus;
     const note = String(body.note ?? "").trim();
-    const location = typeof body.location === "string" ? body.location.trim() : undefined;
+    const locationValue = typeof body.location === "string" ? body.location.trim().toUpperCase() : "";
+    const location = locationValue || undefined;
 
     const missing_qty = Number(body.missing_qty ?? 0);
     const damaged_qty = Number(body.damaged_qty ?? 0);
@@ -50,6 +52,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     if (location !== undefined && location.length > 80) {
       return NextResponse.json({ error: "Storage location must be 80 characters or fewer." }, { status: 400 });
     }
+    if (location && !isBinLocation(location)) {
+      return NextResponse.json({ error: BIN_LOCATION_HINT }, { status: 400 });
+    }
 
     const order = await db.purchaseOrder.findUnique({
       where: { po_id },
@@ -59,6 +64,12 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     if (order.status === "cancelled") {
       return NextResponse.json(
         { error: "This order was cancelled and can no longer be received." },
+        { status: 409 },
+      );
+    }
+    if (order.status !== "pending" && order.status !== "back-order") {
+      return NextResponse.json(
+        { error: "Only pending or back-order purchase orders can be received." },
         { status: 409 },
       );
     }
@@ -104,6 +115,17 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     const updated = await db.$transaction(async (tx) => {
       if (location !== undefined && status !== "pending") {
+        if (location && line.product.status === "active") {
+          const occupied = await tx.product.findFirst({
+            where: {
+              location,
+              status: "active",
+              product_id: { not: line.product_id },
+            },
+            select: { name: true },
+          });
+          if (occupied) throw new DuplicateBinLocationError(location, occupied.name);
+        }
         await tx.product.update({
           where: { product_id: line.product_id },
           data: { location: location || null },
@@ -206,12 +228,15 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       });
 
       return result;
-    });
+    }, { isolationLevel: "Serializable" });
 
     return NextResponse.json(serialize(updated));
   } catch (error) {
     if (error instanceof AuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof DuplicateBinLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     throw error;
   }

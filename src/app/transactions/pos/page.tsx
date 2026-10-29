@@ -19,6 +19,7 @@ type Product = {
   name: string;
   category: string;
   uom: string;
+  base_price: number;
   selling_price: number;
   stock_qty: number;
   old_stock_qty: number;
@@ -36,7 +37,7 @@ type ProductTile =
   | { kind: "product"; key: number; product: Product };
 
 const CATEGORIES = ["all", "cylinder", "accessory", "appliance"] as const;
-const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
+const QUICK_AMOUNTS = [50, 100, 200, 500, 1000];
 
 export default function PosPage() {
   const { user } = useSession();
@@ -50,9 +51,6 @@ export default function PosPage() {
     family: "lpg" | "accessory";
     variants: Product[];
   } | null>(null);
-  const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
-  const [variantQuery, setVariantQuery] = useState("");
-  const [variantDropdownOpen, setVariantDropdownOpen] = useState(false);
   const [seniorDiscount, setSeniorDiscount] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "gcash">("cash");
   const [cashInput, setCashInput] = useState("");
@@ -77,6 +75,7 @@ export default function PosPage() {
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (Number(p.base_price) <= 0 || Number(p.selling_price) <= 0) return false;
       const matchesCategory = category === "all" || p.category === category;
       const matchesSearch =
         !search ||
@@ -149,14 +148,8 @@ export default function PosPage() {
     paymentMethod === "gcash" &&
     (!gcashMobile.trim() || !isValidPhMobile(gcashMobile) || !gcashRef.trim());
   const paymentIncomplete = cashShort || gcashIncomplete;
-  const selectedVariant = variantSelection?.variants.find(
-    (product) => product.product_id === selectedVariantId,
-  ) ?? null;
-  const matchingVariants = (variantSelection?.variants ?? []).filter((product) =>
-    getVariantOptionLabel(product, variantSelection?.family ?? "lpg").toLowerCase().includes(variantQuery.trim().toLowerCase()),
-  );
-
   function addToCart(product: Product) {
+    if (Number(product.base_price) <= 0 || Number(product.selling_price) <= 0) return;
     const available = Number(product.old_stock_qty) || 0;
     if (available <= 0) return;
     setCart((current) => {
@@ -173,23 +166,16 @@ export default function PosPage() {
 
   function openVariantPicker(family: "lpg" | "accessory", variants: Product[]) {
     setVariantSelection({ family, variants });
-    setSelectedVariantId(null);
-    setVariantQuery("");
-    setVariantDropdownOpen(true);
   }
 
-  function addSelectedVariant() {
-    const selected = variantSelection?.variants.find((product) => product.product_id === selectedVariantId);
-    if (!selected || (Number(selected.old_stock_qty) || 0) <= 0) return;
-    addToCart(selected);
+  function selectVariant(product: Product) {
+    if ((Number(product.old_stock_qty) || 0) <= 0) return;
+    addToCart(product);
     closeVariantPicker();
   }
 
   function closeVariantPicker() {
     setVariantSelection(null);
-    setSelectedVariantId(null);
-    setVariantQuery("");
-    setVariantDropdownOpen(false);
   }
 
   function productSizeLabel(product: Product) {
@@ -200,12 +186,6 @@ export default function PosPage() {
 
   function getVariantOptionLabel(product: Product, family: "lpg" | "accessory") {
     return family === "lpg" ? productSizeLabel(product) : product.name;
-  }
-
-  function chooseVariant(product: Product) {
-    setSelectedVariantId(product.product_id);
-    setVariantQuery(getVariantOptionLabel(product, variantSelection?.family ?? "lpg"));
-    setVariantDropdownOpen(false);
   }
 
   function updateQuantity(productId: number, quantity: number) {
@@ -370,7 +350,7 @@ export default function PosPage() {
                     key={tile.key}
                     type="button"
                     disabled={available <= 0}
-                    aria-label={`${tile.key === "lpg" ? "LPG" : "Gas Accessories"}, ${tile.variants.length} ${tile.key === "lpg" ? "sizes" : "models"} available, ${available} units in stock`}
+                    aria-label={`${tile.key === "lpg" ? "LPG" : "Accessories"}, ${tile.variants.length} ${tile.key === "lpg" ? "sizes" : "models"} available, ${available} units in stock`}
                     onClick={() => openVariantPicker(tile.key, tile.variants)}
                     className={`relative min-h-36 rounded-xl border p-6 text-left transition ${available <= 0 ? "cursor-not-allowed border-red-200 bg-slate-50 opacity-80" : "border-[#e2e8f0] bg-white hover:border-blue-600"}`}
                   >
@@ -380,9 +360,9 @@ export default function PosPage() {
                     <span className={`absolute right-3 top-3 rounded-full px-3 py-1 text-sm font-semibold ${available <= 0 ? "bg-red-100 text-red-700" : "bg-[#f1f5f9] text-slate-500"}`}>
                       {available}
                     </span>
-                    <p className="mt-8 text-xl font-semibold">{tile.key === "lpg" ? "LPG" : "Gas Accessories"}</p>
+                    <p className="mt-8 text-xl font-semibold">{tile.key === "lpg" ? "LPG" : "Accessories"}</p>
                     <p className="mt-2 text-sm text-slate-500">
-                      {tile.variants.length} {tile.key === "lpg" ? "sizes · choose size" : "models · choose model"}
+                      {tile.variants.length} {tile.key === "lpg" ? "sizes" : "models"}
                     </p>
                   </button>
                 );
@@ -611,15 +591,15 @@ export default function PosPage() {
 
           {paymentMethod === "cash" ? (
             <div className="mb-4">
-              <div className="mb-2 grid grid-cols-4 gap-2">
+              <div className="mb-2 grid grid-cols-5 gap-1.5">
                 {QUICK_AMOUNTS.map((amount) => (
                   <button
                     key={amount}
                     type="button"
-                    onClick={() => setCashInput(amount.toFixed(2))}
-                    className="min-h-12 rounded-lg border border-[#e2e8f0] px-2 text-sm font-semibold text-slate-700"
+                    onClick={() => setCashInput((current) => ((Number(current) || 0) + amount).toFixed(2))}
+                    className="min-h-12 min-w-0 rounded-lg border border-[#e2e8f0] px-1 text-xs font-semibold text-slate-700"
                   >
-                    ₱{amount >= 1000 ? `${amount / 1000}K` : amount}
+                    ₱{amount.toLocaleString("en-PH")}
                   </button>
                 ))}
               </div>
@@ -685,84 +665,41 @@ export default function PosPage() {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={variantSelection !== null}
-        title={variantSelection?.family === "accessory" ? "Select Gas Accessory" : "Select LPG Size"}
-        size="md"
-        message={
-          variantSelection ? (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  {variantSelection.family === "lpg" ? "Size / UOM" : "Accessory Model"}
-                </span>
-                <div className="relative">
-                  <input
-                    type="text"
-                    role="combobox"
-                    aria-label={variantSelection.family === "lpg" ? "Search LPG size or UOM" : "Search accessory model"}
-                    aria-autocomplete="list"
-                    aria-expanded={variantDropdownOpen}
-                    aria-controls="pos-variant-options"
-                    autoComplete="off"
-                    placeholder={variantSelection.family === "lpg" ? "Search or select size" : "Search regulator or hose"}
-                    value={variantQuery}
-                    onFocus={() => setVariantDropdownOpen(true)}
-                    onChange={(event) => {
-                      setVariantQuery(event.target.value);
-                      setSelectedVariantId(null);
-                      setVariantDropdownOpen(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") setVariantDropdownOpen(false);
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        const firstAvailable = matchingVariants.find((product) => (Number(product.old_stock_qty) || 0) > 0);
-                        if (firstAvailable) chooseVariant(firstAvailable);
-                      }
-                    }}
-                    className="h-12 w-full rounded-lg border border-[#e2e8f0] bg-white px-4 text-base text-slate-900"
-                  />
-                  {variantDropdownOpen ? (
-                    <div id="pos-variant-options" role="listbox" className="absolute left-0 top-full z-10 mt-1 max-h-60 w-full overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border border-[#e2e8f0] bg-white py-1 shadow-lg">
-                      {matchingVariants.length > 0 ? matchingVariants.map((product) => (
-                        <button
-                          key={product.product_id}
-                          type="button"
-                          role="option"
-                          aria-selected={selectedVariantId === product.product_id}
-                          aria-label={getVariantOptionLabel(product, variantSelection.family)}
-                          disabled={(Number(product.old_stock_qty) || 0) <= 0}
-                          onClick={() => chooseVariant(product)}
-                          className="block min-h-12 w-full px-4 py-3 text-left text-base text-slate-900 hover:bg-blue-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                        >
-                          {getVariantOptionLabel(product, variantSelection.family)}
-                        </button>
-                      )) : (
-                        <p className="px-3 py-2 text-sm text-slate-500">No matching variants.</p>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              </label>
-              {selectedVariant ? (
-                <div className="rounded-lg bg-slate-50 p-3 text-sm">
-                  <p className="font-medium text-slate-900">{selectedVariant.name}</p>
-                  <p className="font-semibold text-slate-700">
-                    {peso(selectedVariant.selling_price)} · {selectedVariant.old_stock_qty} available
-                  </p>
-                </div>
-              ) : null}
+
+      {variantSelection ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4 transition-opacity duration-150" onMouseDown={(event) => { if (event.target === event.currentTarget) closeVariantPicker(); }}>
+          <section role="dialog" aria-modal="true" aria-label={variantSelection.family === "accessory" ? "Select accessory" : "Select LPG size"} className="w-full max-w-2xl rounded-2xl border border-[#e2e8f0] bg-white p-5 shadow-2xl sm:p-6">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">{variantSelection.family === "accessory" ? "Select Accessory" : "Select LPG Size"}</h2>
+                <p className="mt-1 text-sm text-slate-500">Choose an item to add it to the order.</p>
+              </div>
+              <button type="button" aria-label="Close variant selection" onClick={closeVariantPicker} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-2xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-900">&#215;</button>
             </div>
-          ) : null
-        }
-        confirmLabel="Add to order"
-        confirmDisabled={!selectedVariant || (Number(selectedVariant.old_stock_qty) || 0) <= 0}
-        cancelLabel="Cancel"
-        onConfirm={addSelectedVariant}
-        onCancel={closeVariantPicker}
-        onClose={closeVariantPicker}
-      />
+            <div className="grid max-h-[65vh] grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3">
+              {variantSelection.variants.map((product) => {
+                const available = Math.max(0, Number(product.old_stock_qty) || 0);
+                const inStock = available > 0;
+                return (
+                  <button
+                    key={product.product_id}
+                    type="button"
+                    disabled={!inStock}
+                    onClick={() => selectVariant(product)}
+                    className={`flex min-h-36 flex-col items-start justify-between rounded-xl border p-4 text-left transition ${inStock ? "border-slate-200 bg-white hover:border-blue-600 hover:bg-blue-50 active:scale-[0.98]" : "cursor-not-allowed border-slate-200 bg-slate-50 opacity-60"}`}
+                  >
+                    <span className="text-lg font-bold text-slate-900">{getVariantOptionLabel(product, variantSelection.family)}</span>
+                    <span className="text-base font-semibold text-slate-700">{peso(product.selling_price)}</span>
+                    <span className={`mt-2 rounded-full px-2.5 py-1 text-xs font-semibold ${inStock ? "bg-emerald-50 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
+                      {inStock ? `${available} in stock` : "Out of stock"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <ConfirmDialog
         open={voidTarget !== null}

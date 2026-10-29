@@ -2,6 +2,14 @@
 
 import { useEffect, useState } from "react";
 import AdminOnly from "@/components/AdminOnly";
+import {
+  PURCHASE_ORDER_STATUS_FILTERS,
+  PurchaseOrderStatusBadge,
+  PurchaseOrderStatusTabs,
+  RECEIVE_ORDER_STATUS_FILTERS,
+  type PurchaseOrderStatusCounts,
+  type PurchaseOrderStatusFilter,
+} from "@/components/PurchaseOrderStatus";
 import { peso } from "@/lib/format";
 import Pagination, { clampPage, pageSlice } from "@/components/Pagination";
 import {
@@ -35,11 +43,10 @@ type PO = {
   total_amount: number;
   order_date: string;
   received_at: string | null;
-  supplier: { name: string };
+  supplier: { name: string; email?: string | null };
   items: POLine[];
 };
 
-const STATUS_FILTERS = ["all", "confirmed", "back-order", "received", "pending"] as const;
 const PAGE_SIZE = 5;
 const RECEIVING_STATUS_OPTIONS: Exclude<LineStatus, "pending">[] = ["back-order", "complete"];
 /** Display labels for the shared status list, so the two can't drift apart. */
@@ -53,7 +60,7 @@ function ReceiveOrdersPageView() {
   const [orders, setOrders] = useState<PO[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] =
-    useState<(typeof STATUS_FILTERS)[number]>("all");
+    useState<PurchaseOrderStatusFilter>("all");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState<PO | null>(null);
@@ -69,6 +76,9 @@ function ReceiveOrdersPageView() {
   const [damagedQty, setDamagedQty] = useState("0");
   const [excessQty, setExcessQty] = useState("0");
   const [storageLocation, setStorageLocation] = useState("");
+  const [locationSearch, setLocationSearch] = useState("");
+  const [locationDropdownOpen, setLocationDropdownOpen] = useState(false);
+  const [highlightedLocationIndex, setHighlightedLocationIndex] = useState(0);
   const [warehouseLocations, setWarehouseLocations] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [dialogError, setDialogError] = useState("");
@@ -77,7 +87,8 @@ function ReceiveOrdersPageView() {
     setLoading(true);
     try {
       setOrders(
-        await listPurchaseOrders({ all: "1" }),
+        (await listPurchaseOrders({ all: "1", receivableOnly: "1" }))
+          .filter((order: PO) => order.status !== "issued" && order.status !== "cancelled"),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load orders");
@@ -89,10 +100,10 @@ function ReceiveOrdersPageView() {
   // Load the full order set once; filtering and pagination are client-side.
   useEffect(() => {
     let active = true;
-    listPurchaseOrders({ all: "1" })
+    listPurchaseOrders({ all: "1", receivableOnly: "1" })
       .then((rows) => {
         if (active) {
-          setOrders(rows);
+          setOrders(rows.filter((order: PO) => order.status !== "issued" && order.status !== "cancelled"));
           setPage(1);
         }
       })
@@ -141,12 +152,60 @@ function ReceiveOrdersPageView() {
     setDamagedQty(String(line.damaged_qty ?? 0));
     setExcessQty(String(line.excess_qty ?? 0));
     setStorageLocation(line.product.location ?? "");
+    setLocationSearch(line.product.location ?? "");
+    setLocationDropdownOpen(false);
+    setHighlightedLocationIndex(0);
     setDialogError("");
+  }
+
+  const filteredWarehouseLocations = warehouseLocations.filter((location) =>
+    location.toLocaleLowerCase().includes(locationSearch.trim().toLocaleLowerCase()),
+  );
+
+  function selectStorageLocation(location: string) {
+    const selected = location.trim().toUpperCase();
+    setStorageLocation(selected);
+    setLocationSearch(selected);
+    setLocationDropdownOpen(false);
+    setHighlightedLocationIndex(0);
   }
 
   function closeReceive() {
     setTarget(null);
     setDialogError("");
+  }
+
+  function reportDiscrepancy(order: PO) {
+    const reference = order.reference_no || `PO-${order.po_id}`;
+    const subject = `Discrepancy Report: ${reference} - ${order.supplier.name}`;
+    const itemDetails = order.items.map((line) => {
+      const issues = [
+        line.missing_qty ? `Missing: ${line.missing_qty}` : null,
+        line.damaged_qty ? `Damaged: ${line.damaged_qty}` : null,
+        line.excess_qty ? `Excess: ${line.excess_qty}` : null,
+      ].filter(Boolean).join(", ");
+      return [
+        `- Product: ${line.product.name}`,
+        `  Ordered Qty: ${line.quantity}`,
+        `  Received Qty: ${line.received_qty}`,
+        `  Issue Description: ${issues || line.receive_note || ""}`,
+      ].join("\n");
+    }).join("\n\n");
+    const body = [
+      "Hi Team,",
+      "",
+      `We noted a discrepancy with the recent delivery under PO #${reference}.`,
+      "",
+      "Details of concern (damaged / incomplete qty / other):",
+      itemDetails || "- Product: \n- Ordered Qty: \n- Received Qty: \n- Issue Description: ",
+      "",
+      "Please advise on replacement or credit memo.",
+      "",
+      "Thank you,",
+      "OHMYGAS Store",
+    ].join("\n");
+    const mailto = `mailto:${encodeURIComponent(order.supplier.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.open(mailto, "_blank");
   }
 
   async function saveReceive() {
@@ -203,6 +262,15 @@ function ReceiveOrdersPageView() {
     if (statusFilter === "all") return true;
     return order.status === statusFilter;
   });
+  const statusCounts = PURCHASE_ORDER_STATUS_FILTERS.reduce(
+    (counts, status) => {
+      counts[status] = status === "all"
+        ? orders.length
+        : orders.filter((order) => order.status === status).length;
+      return counts;
+    },
+    {} as PurchaseOrderStatusCounts,
+  );
   const currentPage = clampPage(page, filteredOrders.length, PAGE_SIZE);
   const visibleOrders = pageSlice(filteredOrders, currentPage, PAGE_SIZE);
   function isLineComplete(line: POLine) {
@@ -220,22 +288,12 @@ function ReceiveOrdersPageView() {
         <h1 className="text-3xl font-semibold uppercase">Receive Orders</h1>
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {STATUS_FILTERS.map((status) => (
-          <button
-            key={status}
-            type="button"
-            onClick={() => { setStatusFilter(status); setPage(1); }}
-            className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase transition ${
-              statusFilter === status
-                ? "border-blue-600 bg-blue-600/10 text-blue-700"
-                : "border-[#e2e8f0] text-slate-500 hover:border-blue-600"
-            }`}
-          >
-            {status === "received" ? "Completed" : status === "back-order" ? "Back Order" : status}
-          </button>
-        ))}
-      </div>
+      <PurchaseOrderStatusTabs
+        value={statusFilter}
+        counts={statusCounts}
+        filters={RECEIVE_ORDER_STATUS_FILTERS}
+        onChange={(status) => { setStatusFilter(status); setPage(1); }}
+      />
 
       {error ? (
         <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
@@ -268,7 +326,7 @@ function ReceiveOrdersPageView() {
                   </td>
                 </tr>
               ) : visibleOrders.map((order) => {
-                const canReceive = order.status === "confirmed" || order.status === "back-order";
+                const canReceive = order.status === "pending" || order.status === "back-order";
                 const nextLine = canReceive ? order.items.find((line) => !isLineComplete(line)) : undefined;
                 return (
                   <tr key={order.po_id} className="border-t border-[#e2e8f0]">
@@ -280,7 +338,7 @@ function ReceiveOrdersPageView() {
                       {peso(Number(order.total_amount))}
                     </td>
                     <td className="px-4 py-3">
-                      <LineBadge status={order.status} />
+                      <PurchaseOrderStatusBadge status={order.status} />
                     </td>
                     <td className="px-4 py-3">{new Date(order.order_date).toLocaleDateString()}</td>
                     <td className="px-4 py-3">
@@ -330,7 +388,7 @@ function ReceiveOrdersPageView() {
                 <p className="text-sm text-slate-500">{viewing.supplier.name} | {new Date(viewing.order_date).toLocaleString()}</p>
               </div>
               <div className="flex items-center gap-3">
-                <LineBadge status={viewing.status} />
+                <PurchaseOrderStatusBadge status={viewing.status} />
                 <span className="font-semibold tabular-nums">{peso(Number(viewing.total_amount))}</span>
               </div>
             </div>
@@ -339,6 +397,7 @@ function ReceiveOrdersPageView() {
                 <thead className="text-slate-500">
                   <tr className="border-b border-[#e2e8f0] text-[11px] uppercase tracking-wide">
                     <th className="px-4 py-3">Product</th>
+                    <th className="px-4 py-3">Bin Location</th>
                     <th className="px-4 py-3 text-right">Ordered</th>
                     <th className="px-4 py-3 text-right">Received</th>
                     <th className="px-4 py-3 text-right">Amount</th>
@@ -353,11 +412,12 @@ function ReceiveOrdersPageView() {
                         <p>{line.product.name}</p>
                         <p className="text-xs text-slate-500">{line.product.sku}</p>
                       </td>
+                      <td className="px-4 py-3 font-mono text-xs">{line.product.location || "UNASSIGNED"}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{line.quantity}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{line.received_qty}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{peso(line.quantity * Number(line.unit_cost))}</td>
                       <td className="px-4 py-3">
-                        <LineBadge status={line.receive_status} />
+                        <PurchaseOrderStatusBadge status={line.receive_status} />
                         {(line.missing_qty || line.damaged_qty || line.excess_qty) ? (
                           <p className="mt-1 text-xs font-medium text-amber-700">
                             {[line.missing_qty ? `${line.missing_qty} missing` : null, line.damaged_qty ? `${line.damaged_qty} damaged` : null, line.excess_qty ? `${line.excess_qty} excess` : null].filter(Boolean).join(" · ")}
@@ -368,11 +428,11 @@ function ReceiveOrdersPageView() {
                       <td className="px-4 py-3">
                         {isLineComplete(line) ? (
                           <span className="text-xs font-semibold uppercase text-emerald-700">Complete</span>
-                        ) : viewing.status === "confirmed" || viewing.status === "back-order" ? (
+                        ) : viewing.status === "pending" || viewing.status === "back-order" ? (
                           <button type="button" onClick={() => { setViewing(null); openReceive(viewing, line); }} className="rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700">
                             Receive
                           </button>
-                        ) : viewing.status === "pending" ? (
+                        ) : viewing.status === "issued" ? (
                           <span className="text-xs text-slate-500">Awaiting confirmation</span>
                         ) : null}
                       </td>
@@ -381,7 +441,16 @@ function ReceiveOrdersPageView() {
                 </tbody>
               </table>
             </div>
-            <div className="flex justify-end border-t border-[#e2e8f0] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e2e8f0] p-4">
+              <button
+                type="button"
+                disabled={!viewing.supplier.email}
+                title={viewing.supplier.email ? `Email ${viewing.supplier.email}` : "Supplier email is not available"}
+                onClick={() => reportDiscrepancy(viewing)}
+                className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Report Discrepancy
+              </button>
               <button type="button" onClick={() => setViewing(null)} className="rounded-lg border border-[#e2e8f0] px-4 py-2 text-sm text-slate-600">Close</button>
             </div>
           </div>
@@ -389,7 +458,7 @@ function ReceiveOrdersPageView() {
       ) : null}
       {target ? (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4">
-          <div className="my-8 w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+          <div className="my-8 w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
             <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
               Receive
             </p>
@@ -403,20 +472,39 @@ function ReceiveOrdersPageView() {
               {new Date(target.order.order_date).toLocaleString()}
             </p>
 
-            <div className="mb-4 flex justify-between border-y border-[#e2e8f0] py-3 text-sm">
-              <span>
-                {target.line.product.name} × {target.line.quantity}
-              </span>
-              <span className="font-semibold tabular-nums">
-                {peso(target.line.quantity * Number(target.line.unit_cost))}
-              </span>
-            </div>
-
-            <div className="mb-4 flex justify-between text-base font-bold">
-              <span>Total</span>
-              <span className="tabular-nums">
-                {peso(target.line.quantity * Number(target.line.unit_cost))}
-              </span>
+            <div className="mb-4 overflow-x-hidden">
+              <table className="my-2 w-full table-fixed text-[11px] sm:text-sm">
+                <thead>
+                  <tr className="border-b border-slate-300 text-left text-[11px] uppercase tracking-wide text-slate-500">
+                    <th className="w-[28%] pb-2">Item</th>
+                    <th className="w-[22%] pb-2">Bin Location</th>
+                    <th className="w-[10%] pb-2 text-right">Qty</th>
+                    <th className="w-[20%] whitespace-nowrap pb-2 text-right">Unit Price</th>
+                    <th className="w-[20%] whitespace-nowrap pb-2 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-200">
+                    <td className="truncate py-2 pr-1" title={target.line.product.name}>{target.line.product.name}</td>
+                    <td className="truncate py-2 pr-1 font-mono text-[10px] sm:text-xs" title={target.line.product.location || "UNASSIGNED"}>{target.line.product.location || "UNASSIGNED"}</td>
+                    <td className="whitespace-nowrap py-2 text-right tabular-nums">{target.line.quantity}</td>
+                    <td className="whitespace-nowrap py-2 text-right tabular-nums">
+                      {peso(Number(target.line.unit_cost))}
+                    </td>
+                    <td className="whitespace-nowrap py-2 text-right tabular-nums">
+                      {peso(target.line.quantity * Number(target.line.unit_cost))}
+                    </td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr className="text-base font-bold">
+                    <td className="pt-3" colSpan={4}>Total</td>
+                    <td className="whitespace-nowrap pt-3 text-right tabular-nums">
+                      {peso(target.line.quantity * Number(target.line.unit_cost))}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
 
             <label className="mb-3 block">
@@ -452,27 +540,107 @@ function ReceiveOrdersPageView() {
             ) : null}
 
             {lineStatus !== "pending" ? (
-              <label className="mb-3 block">
+              <div className="mb-3">
                 <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  STORAGE / RACK LOCATION
+                  STORAGE / BIN LOCATION
                 </span>
-                <input
-                  list="receive-storage-locations"
-                  maxLength={80}
-                  placeholder="e.g. RACK-A1"
-                  className="w-full rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-slate-900"
-                  value={storageLocation}
-                  onChange={(e) => setStorageLocation(e.target.value.toUpperCase())}
-                />
-                <datalist id="receive-storage-locations">
-                  {warehouseLocations.map((location) => (
-                    <option key={location} value={location} />
-                  ))}
-                </datalist>
-                <span className="mt-1 block text-xs text-slate-500">
-                  This product will be stored at {storageLocation.trim() || "an unassigned location"}.
-                </span>
-              </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    role="combobox"
+                    aria-label="Storage / bin location"
+                    aria-autocomplete="list"
+                    aria-expanded={locationDropdownOpen}
+                    aria-controls="receive-storage-locations"
+                    aria-activedescendant={
+                      locationDropdownOpen && filteredWarehouseLocations[highlightedLocationIndex]
+                        ? `receive-storage-location-${highlightedLocationIndex}`
+                        : undefined
+                    }
+                    autoComplete="off"
+                    maxLength={80}
+                    placeholder="Search or enter a bin ID (e.g. SHELF-C2-01)"
+                    className="w-full rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-slate-900"
+                    value={locationSearch}
+                    onFocus={() => setLocationDropdownOpen(true)}
+                    onBlur={() => setLocationDropdownOpen(false)}
+                    onChange={(event) => {
+                      setLocationSearch(event.target.value.toUpperCase());
+                      setStorageLocation("");
+                      setHighlightedLocationIndex(0);
+                      setLocationDropdownOpen(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        setLocationDropdownOpen(false);
+                      } else if (event.key === "ArrowDown" && filteredWarehouseLocations.length) {
+                        event.preventDefault();
+                        setLocationDropdownOpen(true);
+                        setHighlightedLocationIndex((index) => Math.min(index + 1, filteredWarehouseLocations.length - 1));
+                      } else if (event.key === "ArrowUp" && filteredWarehouseLocations.length) {
+                        event.preventDefault();
+                        setLocationDropdownOpen(true);
+                        setHighlightedLocationIndex((index) => Math.max(index - 1, 0));
+                      } else if (event.key === "Enter" && locationDropdownOpen) {
+                        const option = filteredWarehouseLocations[highlightedLocationIndex];
+                        if (option) {
+                          event.preventDefault();
+                          selectStorageLocation(option);
+                        } else if (locationSearch.trim()) {
+                          event.preventDefault();
+                          selectStorageLocation(locationSearch);
+                        }
+                      }
+                    }}
+                  />
+                  {locationDropdownOpen ? (
+                    <div
+                      id="receive-storage-locations"
+                      role="listbox"
+                      className="absolute left-0 right-0 top-full z-50 mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+                    >
+                      {filteredWarehouseLocations.map((location, index) => (
+                        <button
+                          id={`receive-storage-location-${index}`}
+                          key={location}
+                          type="button"
+                          role="option"
+                          aria-selected={location === storageLocation}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => selectStorageLocation(location)}
+                          className={`block w-full px-3 py-2 text-left text-sm ${
+                            highlightedLocationIndex === index ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {location}
+                        </button>
+                      ))}
+                      {locationSearch.trim() && !warehouseLocations.some(
+                        (location) => location.toLocaleLowerCase() === locationSearch.trim().toLocaleLowerCase(),
+                      ) ? (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => selectStorageLocation(locationSearch)}
+                          className="block w-full border-t border-slate-100 px-3 py-2 text-left text-sm font-medium text-blue-700 hover:bg-blue-50"
+                        >
+                          Use “{locationSearch.trim()}”
+                        </button>
+                      ) : null}
+                      {!filteredWarehouseLocations.length && !locationSearch.trim() ? (
+                        <p className="px-3 py-2 text-sm text-slate-500">No bin locations available.</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                {storageLocation.trim() ? (
+                  <span className="mt-1 block text-xs text-slate-500">
+                    This product will be stored at {storageLocation.trim()}.
+                  </span>
+                ) : null}
+              </div>
             ) : null}
 
             {lineStatus === "back-order" ? (
@@ -526,7 +694,7 @@ function ReceiveOrdersPageView() {
                 onClick={saveReceive}
                 className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
               >
-                {saving ? "Saving…" : "Save"}
+                {saving ? "Confirming…" : "Confirm Receipt"}
               </button>
               <button
                 type="button"
@@ -540,27 +708,6 @@ function ReceiveOrdersPageView() {
         </div>
       ) : null}
     </div>
-  );
-}
-
-function LineBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    complete: "bg-emerald-500/15 text-emerald-700",
-    received: "bg-emerald-500/15 text-emerald-700",
-    pending: "bg-amber-500/15 text-amber-700",
-    "to-receive": "bg-amber-500/15 text-amber-700",
-    confirmed: "bg-blue-500/15 text-blue-700",
-    "back-order": "bg-orange-500/15 text-orange-700",
-    cancelled: "bg-slate-400/20 text-slate-600",
-  };
-  return (
-    <span
-      className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
-        styles[status] ?? "bg-slate-400/20 text-slate-600"
-      }`}
-    >
-      {status === "to-receive" ? "To receive" : status === "back-order" ? "Back Order" : status}
-    </span>
   );
 }
 

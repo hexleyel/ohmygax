@@ -6,7 +6,7 @@ export async function GET(req: NextRequest) {
   try {
     requireAuth(req, "admin");
     const rows = await db.product.findMany({
-      where: { location: { not: null } },
+      where: { status: "active", location: { not: null } },
       select: { location: true },
       distinct: ["location"],
       orderBy: { location: "asc" },

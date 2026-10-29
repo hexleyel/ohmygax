@@ -13,6 +13,13 @@ import {
 import ConfirmDialog from "@/components/ConfirmDialog";
 import Pagination, { clampPage, pageSlice } from "@/components/Pagination";
 import AdminOnly from "@/components/AdminOnly";
+import {
+  PURCHASE_ORDER_STATUS_FILTERS,
+  PurchaseOrderStatusBadge,
+  PurchaseOrderStatusTabs,
+  type PurchaseOrderStatusCounts,
+  type PurchaseOrderStatusFilter,
+} from "@/components/PurchaseOrderStatus";
 import { useSession } from "@/context/SessionContext";
 import { peso } from "@/lib/format";
 
@@ -28,9 +35,13 @@ type Line = {
   unit_cost: string;
 };
 
-type ProductFamily = "LPG" | "Regulator" | "Hose";
+type ProductFamily = string;
 
-type Supplier = { supplier_id: number; name: string };
+type Supplier = {
+  supplier_id: number;
+  name: string;
+  suppliedProducts: { product_id: number }[];
+};
 
 type Product = {
   product_id: number;
@@ -42,7 +53,7 @@ type Product = {
   base_price: number;
 };
 
-type Category = { category_id: number; code: string; name: string };
+type Category = { category_id: number; code: string; name: string; is_cylinder?: boolean };
 
 type PO = {
   po_id: number;
@@ -65,17 +76,7 @@ type PO = {
 
 type ConfirmationLine = Line & { item_id: number };
 
-const STATUS_FILTERS = ["all", "pending", "confirmed", "back-order", "received", "cancelled"] as const;
 const PAGE_SIZE = 5;
-
-const STATUS_LABELS: Record<(typeof STATUS_FILTERS)[number], string> = {
-  all: "ALL",
-  pending: "PENDING",
-  confirmed: "CONFIRMED",
-  "back-order": "BACK ORDER",
-  received: "COMPLETED",
-  cancelled: "CANCELLED",
-};
 
 const emptyLine: Line = {
   product_id: 0,
@@ -110,7 +111,7 @@ function PurchaseOrdersPageView() {
   const [activeUomLine, setActiveUomLine] = useState<number | null>(null);
   const [viewing, setViewing] = useState<PO | null>(null);
   const [statusFilter, setStatusFilter] =
-    useState<(typeof STATUS_FILTERS)[number]>("all");
+    useState<PurchaseOrderStatusFilter>("all");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [duplicateWarning, setDuplicateWarning] = useState("");
@@ -166,25 +167,19 @@ function PurchaseOrdersPageView() {
     if (product.category === "cylinder") return "LPG";
     if (/regulator/i.test(product.name)) return "Regulator";
     if (/hose/i.test(product.name)) return "Hose";
-    return null;
+    return categories.find((category) => category.code === product.category)?.name ?? product.category;
   }
 
-  /** Selecting a family fills its category; the exact product is selected by size below. */
-  function selectProductFamily(index: number, family: ProductFamily) {
-    const familyProduct = products.find((product) => productFamily(product) === family);
-    const category = categories.find((row) => row.code === familyProduct?.category);
-    updateLine(index, {
-      product_id: 0,
-      product_code: "",
-      product_family: family,
-      product_search: family,
-      category_code: familyProduct?.category ?? "",
-      category_search: category?.name ?? (familyProduct?.category === "cylinder" ? "Cylinder" : "Accessory"),
-      variant_search: "",
-      unit_cost: "",
-    });
-    setActiveProductLine(null);
-    setActiveUomLine(index);
+  function baseProductLabel(product: Product) {
+    const category = categories.find((row) => row.code === product.category);
+    if (category?.is_cylinder || product.category.toLocaleLowerCase() === "cylinder") return "LPG";
+    if (/regulator/i.test(product.name)) return "Regulator";
+    if (/hose/i.test(product.name)) return "Hose";
+    const normalizedName = product.name
+      .replace(/^(?:set|kit)\s*[-:]\s*/i, "")
+      .replace(/\s+\d+(?:\.\d+)?\s*(?:kg|g|ml|l|m|inches?|burners?)\b.*$/i, "")
+      .trim();
+    return normalizedName || product.name;
   }
 
   function selectCategory(index: number, categoryCode: string) {
@@ -201,6 +196,23 @@ function PurchaseOrdersPageView() {
     });
     setActiveCategoryLine(null);
     setActiveUomLine(index);
+  }
+
+  function selectBaseProduct(index: number, baseLabel: string) {
+    const product = supplierProducts.find((candidate) => baseProductLabel(candidate) === baseLabel);
+    const category = product ? categories.find((row) => row.code === product.category) : undefined;
+    updateLine(index, {
+      product_id: 0,
+      product_code: "",
+      product_family: product ? productFamily(product) ?? "" : "",
+      product_search: baseLabel,
+      category_code: product?.category ?? "",
+      category_search: category?.name ?? (product?.category === "cylinder" ? "Cylinder" : product ? "Accessory" : ""),
+      variant_search: "",
+      unit_cost: "",
+    });
+    setActiveProductLine(null);
+    setActiveUomLine(product ? index : null);
   }
 
   function productVariantLabel(product: Product) {
@@ -240,7 +252,7 @@ function PurchaseOrdersPageView() {
       product_id: productId,
       product_code: product?.sku ?? "",
       product_family: family ?? "",
-      product_search: family ?? "",
+      product_search: product ? baseProductLabel(product) : "",
       category_code: product?.category ?? "",
       category_search: category?.name ?? (product?.category === "cylinder" ? "Cylinder" : product ? "Accessory" : ""),
       variant_search: product ? selectedVariantLabel(product) : "",
@@ -262,8 +274,10 @@ function PurchaseOrdersPageView() {
   }
 
   const filledLines = lines.filter((l) => l.product_id > 0);
-  const productFamilies = (["LPG", "Regulator", "Hose"] as ProductFamily[])
-    .filter((family) => products.some((product) => productFamily(product) === family));
+  const productFamilies = Array.from(new Set(products.map(productFamily).filter((family): family is string => Boolean(family))));
+  const selectedSupplier = suppliers.find((supplier) => String(supplier.supplier_id) === supplierId);
+  const supplierProductIds = new Set((selectedSupplier?.suppliedProducts ?? []).map((product) => product.product_id));
+  const supplierProducts = products.filter((product) => supplierProductIds.has(product.product_id));
 
   const poTotal = lines.reduce(
     (sum, l) => sum + Number(l.quantity || 0) * Number(l.unit_cost || 0),
@@ -425,8 +439,15 @@ function PurchaseOrdersPageView() {
   const currentPage = clampPage(page, filteredOrders.length, PAGE_SIZE);
   const visibleOrders = pageSlice(filteredOrders, currentPage, PAGE_SIZE);
 
-  const pendingCount = orders.filter((o) => o.status === "pending").length;
-  const cancelledCount = orders.filter((o) => o.status === "cancelled").length;
+  const statusCounts = PURCHASE_ORDER_STATUS_FILTERS.reduce(
+    (counts, status) => {
+      counts[status] = status === "all"
+        ? orders.length
+        : orders.filter((order) => order.status === status).length;
+      return counts;
+    },
+    {} as PurchaseOrderStatusCounts,
+  );
   return (
     <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -435,9 +456,6 @@ function PurchaseOrdersPageView() {
             Transactions
           </p>
           <h1 className="text-3xl font-semibold uppercase">Purchase Orders</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {pendingCount} PENDING · {cancelledCount} CANCELLED
-          </p>
         </div>
         <button
           type="button"
@@ -447,7 +465,7 @@ function PurchaseOrdersPageView() {
           }}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
         >
-          {showForm ? "Close" : "+ New PO"}
+          {showForm ? "Close" : "Create PO"}
         </button>
       </div>
 
@@ -463,7 +481,14 @@ function PurchaseOrdersPageView() {
                 required
                 className="w-full rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-slate-900"
                 value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
+                onChange={(e) => {
+                  setSupplierId(e.target.value);
+                  setLines([{ ...emptyLine }]);
+                  setActiveProductLine(null);
+                  setActiveCategoryLine(null);
+                  setActiveUomLine(null);
+                  setDuplicateWarning("");
+                }}
               >
                 <option value="">Select supplier</option>
                 {suppliers.map((s) => <option key={s.supplier_id} value={s.supplier_id}>{s.name}</option>)}
@@ -507,7 +532,8 @@ function PurchaseOrdersPageView() {
                   aria-expanded={activeProductLine === index}
                   aria-controls={`po-product-options-${index}`}
                   autoComplete="off"
-                  placeholder="Select LPG, Regulator, Hose"
+                  placeholder={supplierId ? "Search supplier products" : "Select a supplier first"}
+                  disabled={!supplierId}
                   className="w-full rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-slate-900"
                   value={line.product_search}
                   onFocus={() => setActiveProductLine(index)}
@@ -529,25 +555,31 @@ function PurchaseOrdersPageView() {
                 />
                 {activeProductLine === index ? (() => {
                   const query = line.product_search.trim().toLocaleLowerCase();
-                  const matches = productFamilies
-                    .filter((family) => !query || family.toLocaleLowerCase().includes(query));
+                  const baseGroups = supplierProducts.reduce<Map<string, Product[]>>((groups, product) => {
+                    const label = baseProductLabel(product);
+                    groups.set(label, [...(groups.get(label) ?? []), product]);
+                    return groups;
+                  }, new Map());
+                  const matchingBases = Array.from(baseGroups.entries()).filter(([label, variants]) =>
+                    (!line.category_code || variants.some((product) => product.category === line.category_code)) &&
+                    (!query || `${label} ${variants.map((product) => `${product.name} ${product.sku} ${product.category} ${product.uom}`).join(" ")}`.toLocaleLowerCase().includes(query)),
+                  );
                   return (
                     <div id={`po-product-options-${index}`} role="listbox" className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-                      {matches.length ? matches.map((family) => (
+                      {matchingBases.length ? matchingBases.map(([baseLabel, variants]) => (
                         <button
-                          key={family}
+                          key={baseLabel}
                           type="button"
                           role="option"
-                          aria-selected={line.product_family === family}
+                          aria-selected={line.product_search === baseLabel}
                           onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => selectProductFamily(index, family)}
-                          className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700"
+                          onClick={() => selectBaseProduct(index, baseLabel)}
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50 hover:text-blue-700"
                         >
-                          {family}
+                          <span>{baseLabel}</span>
+                          <span className="shrink-0 text-xs text-slate-500">{variants.length} {variants.length === 1 ? "option" : "options"}</span>
                         </button>
-                      )) : (
-                        <p className="px-3 py-2 text-sm text-slate-500">No matching products.</p>
-                      )}
+                      )) : <p className="px-3 py-2 text-sm text-slate-500">{supplierId ? "No matching products linked to this supplier." : "Select a supplier first."}</p>}
                     </div>
                   );
                 })() : null}
@@ -595,9 +627,10 @@ function PurchaseOrdersPageView() {
                 />
                 {activeCategoryLine === index ? (() => {
                   const query = line.category_search.trim().toLocaleLowerCase();
-                  const matches = categories.filter((category) =>
-                    !query || `${category.name} ${category.code}`.toLocaleLowerCase().includes(query),
-                  );
+                  const supplierCategoryCodes = new Set(supplierProducts.map((product) => product.category));
+                  const matches = categories.filter((category) => supplierCategoryCodes.has(category.code) && (
+                    !query || `${category.name} ${category.code}`.toLocaleLowerCase().includes(query)
+                  ));
                   return (
                     <div id={`po-category-options-${index}`} role="listbox" className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
                       {matches.length ? matches.map((category) => (
@@ -642,8 +675,8 @@ function PurchaseOrdersPageView() {
                 />
                 {activeUomLine === index && line.category_code ? (() => {
                   const query = line.variant_search.trim().toLocaleLowerCase();
-                  const matches = products.filter((product) => {
-                    if (product.category !== line.category_code || (line.product_family && productFamily(product) !== line.product_family)) return false;
+                  const matches = supplierProducts.filter((product) => {
+                    if (product.category !== line.category_code || (line.product_search && baseProductLabel(product) !== line.product_search)) return false;
                     const searchable = `${productVariantLabel(product)} ${product.name} ${product.sku} ${product.uom}`.toLocaleLowerCase();
                     return !query || searchable.includes(query);
                   }).slice(0, 20);
@@ -751,22 +784,11 @@ function PurchaseOrdersPageView() {
         </form>
       ) : null}
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {STATUS_FILTERS.map((status) => (
-          <button
-            key={status}
-            type="button"
-            onClick={() => setStatusFilter(status)}
-            className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase transition ${
-              statusFilter === status
-                ? "border-blue-600 bg-blue-600/10 text-blue-700"
-                : "border-[#e2e8f0] text-slate-500 hover:border-blue-600"
-            }`}
-          >
-            {STATUS_LABELS[status]}
-          </button>
-        ))}
-      </div>
+      <PurchaseOrderStatusTabs
+        value={statusFilter}
+        counts={statusCounts}
+        onChange={setStatusFilter}
+      />
 
       {error ? (
         <p className="mb-3 rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
@@ -802,7 +824,7 @@ function PurchaseOrdersPageView() {
                   </td>
                   <td className="px-4 py-3">{order.supplier.name}</td>
                   <td className="px-4 py-3">
-                    <StatusBadge status={order.status === "received" ? "completed" : order.status} />
+                    <PurchaseOrderStatusBadge status={order.status} />
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {peso(Number(order.total_amount))}
@@ -816,7 +838,7 @@ function PurchaseOrdersPageView() {
                       >
                         View
                       </button>
-                      {order.status === "pending" ? (
+                      {order.status === "issued" ? (
                         <button
                           type="button"
                           onClick={() => openOrderConfirmation(order)}
@@ -916,7 +938,7 @@ function PurchaseOrdersPageView() {
                   <p className="mt-1 font-mono text-sm font-semibold text-slate-900">
                     {confirmTarget.reference_no || `PO-${confirmTarget.po_id}`}
                   </p>
-                  <div className="mt-2"><StatusBadge status={confirmTarget.status} /></div>
+                  <div className="mt-2"><PurchaseOrderStatusBadge status={confirmTarget.status} /></div>
                 </div>
               </div>
 
@@ -1027,7 +1049,7 @@ function PurchaseOrdersPageView() {
                   <p className="font-mono text-lg font-bold">
                     {viewing.reference_no || `PO #${viewing.po_id}`}
                   </p>
-                  <StatusBadge status={viewing.status} />
+                  <PurchaseOrderStatusBadge status={viewing.status} />
                 </div>
               </div>
 
@@ -1117,7 +1139,7 @@ function PurchaseOrdersPageView() {
               >
                 Print
               </button>
-              {viewing.status === "pending" ? (
+              {viewing.status === "issued" ? (
                 <button
                   type="button"
                   onClick={() => setCancelTarget(viewing)}
@@ -1138,25 +1160,6 @@ function PurchaseOrdersPageView() {
         </div>
       ) : null}
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    completed: "bg-emerald-500/15 text-emerald-700",
-    pending: "bg-amber-500/15 text-amber-700",
-    confirmed: "bg-blue-500/15 text-blue-700",
-    "back-order": "bg-orange-500/15 text-orange-700",
-    cancelled: "bg-slate-400/20 text-slate-600",
-  };
-  return (
-    <span
-      className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
-        styles[status] ?? "bg-slate-400/20 text-slate-600"
-      }`}
-    >
-      {status === "back-order" ? "Back Order" : status}
-    </span>
   );
 }
 

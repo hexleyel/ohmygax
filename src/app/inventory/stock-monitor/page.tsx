@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listProducts, updateProduct } from "@/utils/api-services/productService";
-import { listWarehouseLocations } from "@/utils/api-services/warehouseLocationService";
+import { listProducts } from "@/utils/api-services/productService";
 import AdminOnly from "@/components/AdminOnly";
 
 type Product = {
@@ -18,12 +17,18 @@ type Product = {
   min_stock: number;
   max_stock: number;
   location: string | null;
+  base_price: number;
+  selling_price: number;
 };
 
 function statusOf(p: Product) {
   if (p.old_stock_qty <= 0) return "out";
   if (p.old_stock_qty <= p.min_stock) return "low";
   return "active";
+}
+
+function hasPendingMargin(p: Product) {
+  return Number(p.base_price) <= 0 || Number(p.selling_price) <= 0;
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -36,18 +41,9 @@ function StockMonitorPageView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [filter, setFilter] = useState<"all" | "active" | "low" | "out">("all");
   const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [locationDraft, setLocationDraft] = useState("");
-  const [locationError, setLocationError] = useState("");
-  const [savingLocation, setSavingLocation] = useState(false);
-  const [locationOptions, setLocationOptions] = useState<string[]>([]);
-
   useEffect(() => {
-    Promise.all([listProducts(), listWarehouseLocations()])
-      .then(([items, locations]) => {
-        setProducts(items);
-        setLocationOptions(locations);
-      })
+    listProducts()
+      .then(setProducts)
       .finally(() => setLoading(false));
   }, []);
 
@@ -58,25 +54,6 @@ function StockMonitorPageView() {
   };
 
   const filtered = products.filter((p) => filter === "all" || statusOf(p) === filter);
-
-  async function saveLocation(productId: number) {
-    setSavingLocation(true);
-    setLocationError("");
-    try {
-      await updateProduct(productId, { location: locationDraft.trim() });
-      setProducts(await listProducts());
-      if (locationDraft.trim()) {
-        setLocationOptions((locations) =>
-          Array.from(new Set([...locations, locationDraft.trim()])).sort((a, b) => a.localeCompare(b)),
-        );
-      }
-      setEditingId(null);
-    } catch (error) {
-      setLocationError(error instanceof Error ? error.message : "Failed to update location.");
-    } finally {
-      setSavingLocation(false);
-    }
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
@@ -113,9 +90,9 @@ function StockMonitorPageView() {
               <th className="px-4 py-3">Stock</th>
               <th className="px-4 py-3">Minimum Stock</th>
               <th className="px-4 py-3">Reserve Stock</th>
-              <th className="px-4 py-3">Current Stock</th>
+              <th className="px-4 py-3">In Stock</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Storage / Rack Location</th>
+              <th className="px-4 py-3">Bin Location</th>
             </tr>
           </thead>
           <tbody>
@@ -167,29 +144,9 @@ function StockMonitorPageView() {
                       >
                         {status}
                       </span>
+                      {hasPendingMargin(p) ? <span className="ml-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-800">Margin Pending</span> : null}
                     </td>
-                    <td className="px-4 py-3">
-                      {editingId === p.product_id ? (
-                        <div className="flex min-w-64 items-center gap-2">
-                          <input
-                            list="stock-location-options"
-                            maxLength={80}
-                            autoFocus
-                            value={locationDraft}
-                            onChange={(event) => setLocationDraft(event.target.value.toUpperCase())}
-                            placeholder="e.g. RACK-A1"
-                            className="min-w-0 flex-1 rounded-md border border-slate-200 px-2 py-1 text-xs"
-                          />
-                          <button type="button" disabled={savingLocation} onClick={() => void saveLocation(p.product_id)} className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-50">Save</button>
-                          <button type="button" disabled={savingLocation} onClick={() => { setEditingId(null); setLocationError(""); }} className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600">Cancel</button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-3">
-                          <span className="text-slate-700">{p.location || "UNASSIGNED"}</span>
-                          <button type="button" onClick={() => { setEditingId(p.product_id); setLocationDraft(p.location || ""); setLocationError(""); }} className="whitespace-nowrap rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:border-blue-600 hover:text-blue-700">Edit Location</button>
-                        </div>
-                      )}
-                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700">{p.location || "UNASSIGNED"}</td>
                   </tr>
                 );
               })
@@ -197,12 +154,6 @@ function StockMonitorPageView() {
           </tbody>
         </table>
       </div>
-      <datalist id="stock-location-options">
-        {locationOptions.map((location) => (
-          <option key={location} value={location} />
-        ))}
-      </datalist>
-      {locationError ? <p role="alert" className="mt-3 text-sm text-red-600">{locationError}</p> : null}
     </div>
   );
 }

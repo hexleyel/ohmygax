@@ -3,6 +3,8 @@ import db from "@/lib/db";
 import { AuthError, requireAuth } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
 import { calculateSellingPrice, validateMarginPricing } from "@/lib/calc";
+import { DuplicateBinLocationError } from "@/lib/errors";
+import { BIN_LOCATION_HINT, isBinLocation, normalizeBinLocation } from "@/lib/binLocations";
 import { serialize } from "@/lib/serialize";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -33,44 +35,69 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
     const existing = await db.product.findUnique({ where: { product_id } });
     if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const location = body.location === undefined ? existing.location : normalizeBinLocation(body.location);
+    const status = body.status ?? existing.status;
+    if (location && location.length > 80) {
+      return NextResponse.json({ error: "Bin location must be 80 characters or fewer." }, { status: 400 });
+    }
+    if (body.location !== undefined && location && !isBinLocation(location)) {
+      return NextResponse.json({ error: BIN_LOCATION_HINT }, { status: 400 });
+    }
+    if (status === "active" && !location) {
+      return NextResponse.json({ error: "Active products must have a bin location." }, { status: 400 });
+    }
 
     const base_price =
       body.base_price !== undefined ? Number(body.base_price) : Number(existing.base_price);
     const margin_pct =
       body.margin_pct !== undefined ? Number(body.margin_pct) : Number(existing.margin_pct);
-    // Only a genuine pricing change is held to the margin rule. The same
-    // endpoint also serves renames, archive/restore and stock edits, and those
-    // must keep working on a product that has no base price yet.
-    const changingPricing =
-      (body.margin_pct !== undefined &&
-        Number(body.margin_pct) !== Number(existing.margin_pct)) ||
-      (body.base_price !== undefined &&
-        Number(body.base_price) !== Number(existing.base_price));
+    // Explicit pricing fields represent the admin's save action. This also
+    // lets a Pending product with a stored 0% margin be activated at 0%.
+    const changingPricing = body.margin_pct !== undefined || body.base_price !== undefined;
+
+    if (Number(existing.selling_price) <= 0 && changingPricing && body.margin_pct === undefined) {
+      return NextResponse.json({ error: "Enter a margin percentage before activating pending pricing." }, { status: 400 });
+    }
 
     if (changingPricing) {
       const pricingProblem = validateMarginPricing(base_price, margin_pct);
       if (pricingProblem) {
         return NextResponse.json({ error: pricingProblem }, { status: 400 });
       }
+      if (calculateSellingPrice(base_price, margin_pct) <= 0) {
+        return NextResponse.json({ error: "Selling price must be above 0." }, { status: 400 });
+      }
     }
 
-    const selling_price = calculateSellingPrice(base_price, margin_pct);
+    const selling_price = changingPricing
+      ? calculateSellingPrice(base_price, margin_pct)
+      : Number(existing.selling_price);
 
-    const updated = await db.product.update({
-      where: { product_id },
-      data: {
-        name: body.name ?? existing.name,
-        category: body.category ?? existing.category,
-        uom: body.uom ?? existing.uom,
-        base_price,
-        margin_pct,
-        selling_price,
-        min_stock: body.min_stock !== undefined ? Number(body.min_stock) : existing.min_stock,
-        max_stock: body.max_stock !== undefined ? Number(body.max_stock) : existing.max_stock,
-        location: body.location ?? existing.location,
-        status: body.status ?? existing.status,
-      },
-    });
+    const updated = await db.$transaction(async (tx) => {
+      if (status === "active" && location) {
+        const occupied = await tx.product.findFirst({
+          where: { location, status: "active", product_id: { not: product_id } },
+          select: { name: true },
+        });
+        if (occupied) throw new DuplicateBinLocationError(location, occupied.name);
+      }
+
+      return tx.product.update({
+        where: { product_id },
+        data: {
+          name: body.name ?? existing.name,
+          category: body.category ?? existing.category,
+          uom: body.uom ?? existing.uom,
+          base_price,
+          margin_pct,
+          selling_price,
+          min_stock: body.min_stock !== undefined ? Number(body.min_stock) : existing.min_stock,
+          max_stock: body.max_stock !== undefined ? Number(body.max_stock) : existing.max_stock,
+          location,
+          status,
+        },
+      });
+    }, { isolationLevel: "Serializable" });
 
     // Price moves are logged distinctly from ordinary edits, with the before
     // and after figures, since pricing is what the audit trail is mostly for.
@@ -106,6 +133,9 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   } catch (error) {
     if (error instanceof AuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof DuplicateBinLocationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
     throw error;
   }
